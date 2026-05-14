@@ -232,4 +232,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: steps.tag.outputs.status == 'success'
         with:
-          tag_name: ${{ steps.tag.outputs.re
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: ${{ github.workspace }}/release.txt
+          files: ${{ env.FIRMWARE }}/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清理旧的 Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.4
+        if: env.UPLOAD_RELEASE == 'true'
+        with:
+          keep_latest: 5
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
