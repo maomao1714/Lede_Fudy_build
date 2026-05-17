@@ -38,7 +38,7 @@ jobs:
 
       - name: 释放磁盘空间
         run: |
-          echo ">>> 释放前"
+          echo ">>> 释放前磁盘状态"
           df -hT
           sudo rm -rf \
             /usr/share/dotnet \
@@ -46,9 +46,29 @@ jobs:
             /opt/ghc \
             /opt/hostedtoolcache/CodeQL \
             /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/share/chromium \
+            /usr/share/miniconda \
+            /usr/local/share/powershell \
+            /usr/share/az_* \
+            /opt/az \
+            /usr/lib/jvm \
+            /usr/lib/mono \
+            /usr/local/julia* \
             "$AGENT_TOOLSDIRECTORY"
           sudo docker image prune --all --force 2>/dev/null || true
-          echo ">>> 释放后"
+          sudo apt-get purge -y \
+            azure-cli \
+            google-cloud-cli \
+            microsoft-edge-stable \
+            google-chrome-stable \
+            firefox \
+            mono-devel \
+            libgl1-mesa-dri \
+            2>/dev/null || true
+          sudo apt-get autoremove -y 2>/dev/null || true
+          sudo apt-get autoclean 2>/dev/null || true
+          echo ">>> 释放后磁盘状态"
           df -hT
 
       - name: 初始化编译环境
@@ -75,7 +95,8 @@ jobs:
           sudo timedatectl set-timezone "$TZ"
           sudo mkdir -p /workdir
           sudo chown "$USER":"$GROUPS" /workdir
-          echo ">>> 环境初始化完成"
+          echo ">>> 环境初始化完成，当前磁盘："
+          df -hT
 
       - name: 克隆 LEDE 源码
         working-directory: /workdir
@@ -91,28 +112,20 @@ jobs:
           cd openwrt
           "$GITHUB_WORKSPACE/$DIY_P1_SH"
 
-      - name: 缓存 feeds
-        uses: actions/cache@v4
-        with:
-          path: /workdir/openwrt/feeds
-          key: feeds-lede-${{ hashFiles('**/feeds.conf.default', '**/diy-part1.sh') }}-${{ github.run_id }}
-          restore-keys: |
-            feeds-lede-${{ hashFiles('**/feeds.conf.default', '**/diy-part1.sh') }}-
-            feeds-lede-
-
       - name: 更新并安装软件包列表（含移除冲突包）
         run: |
           cd openwrt
           ./scripts/feeds update -a
 
-          # ★ 在 install 之前先删除冲突包的源目录
-          # 这样 feeds install -a 就不会把它们装入索引
-          echo ">>> 删除 vsftpd 冲突包源目录（install 前）"
-          rm -rf feeds/qmodem/luci-app-vsftpd        2>/dev/null || true
+          echo ">>> 删除 vsftpd 冲突包（install 前）"
+          rm -rf feeds/qmodem/luci-app-vsftpd            2>/dev/null || true
           rm -rf feeds/luci/applications/luci-app-vsftpd 2>/dev/null || true
-          rm -rf feeds/packages/net/vsftpd            2>/dev/null || true
-          echo ">>> 剩余 vsftpd 相关目录确认："
-          find feeds -maxdepth 4 -name "*vsftpd*" -type d 2>/dev/null || echo "无（已全部清除）"
+          rm -rf feeds/packages/net/vsftpd               2>/dev/null || true
+          echo ">>> 剩余 vsftpd 相关目录："
+          find feeds -maxdepth 5 -name "*vsftpd*" 2>/dev/null || echo "✅ 无残留"
+
+          echo ">>> rtp2httpd feed 目录确认："
+          find feeds -maxdepth 3 -name "*rtp2httpd*" 2>/dev/null || echo "⚠️ 未找到 rtp2httpd"
 
           ./scripts/feeds install -a
           echo ">>> feeds 安装完成"
@@ -142,6 +155,8 @@ jobs:
           echo ">>> .config 前5行预览："
           head -5 .config
           make defconfig
+          echo ">>> 确认 rtp2httpd 已在配置中："
+          grep -i "rtp2httpd" .config || echo "⚠️ 警告：rtp2httpd 不在最终配置中"
           echo ">>> 当前差异配置："
           ./scripts/diffconfig.sh
 
@@ -160,14 +175,30 @@ jobs:
           make download -j$(nproc)
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
-          echo ">>> 依赖包下载完成"
+          echo ">>> 依赖包下载完成，当前磁盘："
+          df -hT
 
       - name: 编译固件
         id: compile
         run: |
           cd openwrt
           echo ">>> 开始编译，时间：$(date)  核心：$(nproc)"
-          make -j$(nproc) || make -j1 V=s
+          echo ">>> 编译前磁盘状态："
+          df -hT
+
+          if ! make -j$(nproc) 2>&1; then
+            echo ""
+            echo "========================================"
+            echo "⚠️  多核编译失败，切换单核详细模式..."
+            echo "========================================"
+            make -j1 V=s 2>&1 | tail -100
+            echo ""
+            echo "========================================"
+            echo "❌ 编译失败，以上为最后100行日志"
+            echo "========================================"
+            exit 1
+          fi
+
           echo ">>> 编译完成，时间：$(date)"
           echo "status=success" >> "$GITHUB_OUTPUT"
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config \
