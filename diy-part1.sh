@@ -1,16 +1,16 @@
 #!/bin/bash
-# =====================================================
-# DIY 脚本第一部分：在 feeds update 之前执行
-# 主要用途：添加自定义软件源
-# =====================================================
+# DIY 脚本第一部分：添加自定义软件源
+# 在 feeds update 之前由 workflow 执行
 
-# 添加 Lucky 软件源（内网穿透/DDNS工具）
+# Lucky（内网穿透/DDNS）
 echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" >> feeds.conf.default
 
-# 添加 Qmodem 软件源（4G/5G模块管理）
+# Qmodem（4G/5G 模块管理）
 echo "src-git qmodem https://github.com/FUjr/modem_feeds.git;main" >> feeds.conf.default
 
-# 如果你需要 SSR-Plus，取消下面这行的注释
-# echo "src-git helloworld https://github.com/fw876/helloworld.git" >> feeds.conf.default
+# rtp2httpd（IPTV 组播转单播）- 使用官方 feed 地址
+echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" >> feeds.conf.default
 
 echo "✅ 软件源添加完成"
+echo "当前 feeds.conf.default 内容："
+cat feeds.conf.default
