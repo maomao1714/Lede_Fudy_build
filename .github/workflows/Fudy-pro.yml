@@ -1,4 +1,4 @@
-name: 编译 OpenWrt 固件 (华思飞 WH3000 / LEDE)
+name: Lede 固件 (华思飞 WH3000-pro)
 
 on:
   workflow_dispatch:
