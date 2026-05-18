@@ -112,20 +112,30 @@ jobs:
           cd openwrt
           "$GITHUB_WORKSPACE/$DIY_P1_SH"
 
-      - name: 更新并安装软件包列表（含移除冲突包）
+      - name: 更新并安装软件包列表（含移除冲突和问题包）
         run: |
           cd openwrt
           ./scripts/feeds update -a
 
-          echo ">>> 删除 vsftpd 冲突包（install 前）"
+          echo ">>> 移除问题包（install 前）"
+
+          # 1. vsftpd：与 vsftpd-alt 文件冲突
           rm -rf feeds/qmodem/luci-app-vsftpd            2>/dev/null || true
           rm -rf feeds/luci/applications/luci-app-vsftpd 2>/dev/null || true
           rm -rf feeds/packages/net/vsftpd               2>/dev/null || true
-          echo ">>> 剩余 vsftpd 相关目录："
-          find feeds -maxdepth 5 -name "*vsftpd*" 2>/dev/null || echo "✅ 无残留"
 
-          echo ">>> rtp2httpd feed 目录确认："
-          find feeds -maxdepth 3 -name "*rtp2httpd*" 2>/dev/null || echo "⚠️ 未找到 rtp2httpd"
+          # 2. docker-compose：Go 依赖版本冲突，无法编译
+          rm -rf feeds/packages/utils/docker-compose     2>/dev/null || true
+
+          # 3. luci-app-dockerman：强依赖 docker-compose，一并移除
+          rm -rf feeds/luci/applications/luci-app-dockerman 2>/dev/null || true
+
+          echo ">>> 剩余 vsftpd 相关："
+          find feeds -maxdepth 5 -name "*vsftpd*"          2>/dev/null || echo "✅ 无残留"
+          echo ">>> 剩余 docker-compose 相关："
+          find feeds -maxdepth 5 -name "*docker-compose*"  2>/dev/null || echo "✅ 无残留"
+          echo ">>> 剩余 dockerman 相关："
+          find feeds -maxdepth 5 -name "*dockerman*"       2>/dev/null || echo "✅ 无残留"
 
           ./scripts/feeds install -a
           echo ">>> feeds 安装完成"
@@ -155,8 +165,8 @@ jobs:
           echo ">>> .config 前5行预览："
           head -5 .config
           make defconfig
-          echo ">>> 确认 rtp2httpd 已在配置中："
-          grep -i "rtp2httpd" .config || echo "⚠️ 警告：rtp2httpd 不在最终配置中"
+          echo ">>> 确认 rtp2httpd 在配置中："
+          grep -i "rtp2httpd" .config || echo "⚠️ 未找到 rtp2httpd"
           echo ">>> 当前差异配置："
           ./scripts/diffconfig.sh
 
@@ -243,7 +253,7 @@ jobs:
 
           ✅ 已包含功能：
           - LuCI Design 主题
-          - Docker 容器支持
+          - Docker 容器支持（docker/dockerd/containerd）
           - Lucky 内网穿透/DDNS
           - Qmodem 4G/5G 模块管理
           - OpenVPN 服务端
