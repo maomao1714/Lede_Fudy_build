@@ -1,128 +1,164 @@
 #!/bin/bash
 # =====================================================
-# DIY 脚本第二部分
-# 在 feeds install 之后、make defconfig 之前执行
+# DIY 脚本第二部分 - 预置配置文件终极版
+# 不再依赖 uci-defaults，直接写入 /etc/config 文件
 # =====================================================
 
-set -e
+# 1. 主机名
+sed -i 's/OpenWrt/WH3000/g' package/base-files/files/bin/config_generate 2>/dev/null || true
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/01-hostname << 'HOSTNAME_EOF'
+#!/bin/sh
+uci set system.@system[0].hostname='WH3000'
+uci set system.@system[0].timezone='CST-8'
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci commit system
+exit 0
+HOSTNAME_EOF
+chmod +x files/etc/uci-defaults/01-hostname
+echo ">>> [1/6] 主机名已配置"
 
-# =====================================================
-# 1. 修改路由器默认主机名
-# =====================================================
-sed -i 's/OpenWrt/WH3000/g' package/base-files/files/bin/config_generate
-echo ">>> [1/5] 主机名改为 WH3000"
-
-# =====================================================
-# 2. 修改默认 LuCI 主题为 Design
-# =====================================================
-# LEDE 的默认设置文件
+# 2. 主题
 if [ -f package/lean/default-settings/files/zzz-default-settings ]; then
     sed -i 's/luci-theme-bootstrap/luci-theme-design/g' \
         package/lean/default-settings/files/zzz-default-settings
 fi
-# luci feeds 里的主题引用
 find feeds/luci -name "Makefile" 2>/dev/null \
     | xargs grep -l "bootstrap" 2>/dev/null \
     | while read f; do
         sed -i 's/luci-theme-bootstrap/luci-theme-design/g' "$f"
     done
-echo ">>> [2/5] 默认主题改为 luci-theme-design"
+echo ">>> [2/6] 默认主题改为 luci-theme-design"
+
+# 3. Lucky 权限
+echo ">>> [3/6] 修复 Lucky 执行权限..."
+find feeds/lucky/ -type f \( -name "lucky" -o -name "lucky*" \) \
+    -exec chmod +x {} \; 2>/dev/null || true
+find package/ -path "*/lucky/files*" -type f \
+    -exec file {} \; 2>/dev/null \
+    | grep -i "ELF\|executable" \
+    | cut -d: -f1 \
+    | xargs chmod +x 2>/dev/null || true
+echo ">>> Lucky 权限修复完成"
 
 # =====================================================
-# 3. ★ 修复 WiFi 首次启动不出现的问题 ★
-#
-# 根因：mt7981-wo-firmware（Wireless Offload 固件）
-# 在系统第一次启动时，netifd 比 wo-firmware 先加载完成，
-# 导致 radio0/radio1 初始化竞争失败，WiFi 不出现。
-# 重启后时序恢复正常，所以重启一次就有 WiFi 了。
-#
-# 修复方案：通过 uci-defaults 在首次启动时强制重启 netifd，
-# 使其在 wo-firmware 稳定后重新初始化无线接口。
+# 4. ★ 预置无线配置文件（不再依赖启动脚本） ★
 # =====================================================
+mkdir -p files/etc/config
+cat > files/etc/config/wireless << 'WIFI_CONF'
+config wifi-device 'radio0'
+        option type 'mac80211'
+        option channel 'auto'
+        option hwmode '11g'
+        option path 'platform/soc/18000000.wifi'
+        option htmode 'HT40'
+        option disabled '0'
+
+config wifi-iface 'default_radio0'
+        option device 'radio0'
+        option network 'lan'
+        option mode 'ap'
+        option ssid 'WH3000_2.4G'
+        option encryption 'psk2+ccmp'
+        option key 'password123'
+
+config wifi-device 'radio1'
+        option type 'mac80211'
+        option channel 'auto'
+        option hwmode '11a'
+        option path 'platform/soc/18000000.wifi+1'
+        option htmode 'VHT80'
+        option disabled '0'
+
+config wifi-iface 'default_radio1'
+        option device 'radio1'
+        option network 'lan'
+        option mode 'ap'
+        option ssid 'WH3000_5G'
+        option encryption 'psk2+ccmp'
+        option key 'password123'
+WIFI_CONF
+echo ">>> [4/6] 无线配置已预置（路径已修正为 +1）"
+
+# =====================================================
+# 5. ★ 预置 fstab 和 Docker 配置文件 ★
+# =====================================================
+cat > files/etc/config/fstab << 'FSTAB_CONF'
+config global
+        option anon_mount '1'
+
+config mount
+        option target '/mnt/mmcblk0p7'
+        option device '/dev/mmcblk0p7'
+        option fstype 'ext4'
+        option options 'rw,noatime'
+        option enabled '1'
+FSTAB_CONF
+
+cat > files/etc/config/docker << 'DOCKER_CONF'
+config globals
+        option data_root '/mnt/mmcblk0p7/docker'
+DOCKER_CONF
+
 mkdir -p files/etc/uci-defaults
-
-cat > files/etc/uci-defaults/10-wifi-init-fix << 'WIFI_EOF'
+cat > files/etc/uci-defaults/20-docker-prepare << 'DOCKER_PREP'
 #!/bin/sh
-# ★ MT7981 WiFi 首次启动修复脚本 ★
-# 等待 wo-firmware 加载完成，再重启 netifd 使 radio 正常初始化
-
-logger -t wifi-init "MT7981 wo-firmware 启动修复：等待固件加载..."
-
-# 等待 mt7915e 驱动模块加载（最多等 30 秒）
-count=0
-while [ $count -lt 30 ]; do
-    if lsmod | grep -q "mt7915e"; then
-        break
-    fi
+# 等待分区挂载后创建 docker 目录
+MOUNT="/mnt/mmcblk0p7"
+for i in $(seq 1 15); do
+    mountpoint -q "$MOUNT" && break
     sleep 1
-    count=$((count + 1))
 done
-
-# 再额外等 3 秒让 wo-firmware 完全就绪
-sleep 3
-
-# 重启 netifd 使其重新扫描并初始化无线接口
-logger -t wifi-init "mt7915e 已加载，重启 netifd 以初始化 WiFi radio..."
-/etc/init.d/network restart
-
-logger -t wifi-init "WiFi 初始化修复完成"
+if mountpoint -q "$MOUNT"; then
+    mkdir -p "$MOUNT/docker"
+    logger -t docker-prepare "Docker data directory ready"
+else
+    logger -t docker-prepare "WARNING: $MOUNT not mounted"
+fi
 exit 0
-WIFI_EOF
-chmod +x files/etc/uci-defaults/10-wifi-init-fix
+DOCKER_PREP
+chmod +x files/etc/uci-defaults/20-docker-prepare
 
-echo ">>> [3/5] WiFi 首次启动修复脚本已写入"
+echo ">>> [5/6] 分区挂载和 Docker 目录已预置"
 
-# =====================================================
-# 4. Web 管理界面优化（uhttpd）
-#    使用 uci-defaults 方式，不覆盖原始配置文件
-# =====================================================
-cat > files/etc/uci-defaults/99-uhttpd-optimize << 'UCI_EOF'
+# 6. 系统优化（预置部分 uci 配置）
+cat > files/etc/uci-defaults/98-system-optimize << 'OPT_EOF'
 #!/bin/sh
-# uhttpd 性能优化 - 首次启动时执行
+uci -q set uhttpd.main.max_connections='100' 2>/dev/null || true
+uci -q set uhttpd.main.max_requests='10' 2>/dev/null || true
+uci -q set uhttpd.main.http_keepalive='20' 2>/dev/null || true
+uci -q set uhttpd.main.script_timeout='60' 2>/dev/null || true
+uci -q set uhttpd.main.network_timeout='30' 2>/dev/null || true
+uci commit uhttpd 2>/dev/null || true
 
-uci -q set uhttpd.main.max_connections='100'
-uci -q set uhttpd.main.max_requests='10'
-uci -q set uhttpd.main.http_keepalive='20'
-uci -q set uhttpd.main.script_timeout='60'
-uci -q set uhttpd.main.network_timeout='30'
-uci commit uhttpd
-/etc/init.d/uhttpd restart 2>/dev/null || true
-
-exit 0
-UCI_EOF
-chmod +x files/etc/uci-defaults/99-uhttpd-optimize
-
-# rpcd 超时优化
-cat > files/etc/uci-defaults/98-rpcd-timeout << 'RPCD_EOF'
-#!/bin/sh
 uci -q set rpcd.@rpcd[0].timeout='60' 2>/dev/null || true
 uci commit rpcd 2>/dev/null || true
+
+uci -q set samba4.@samba[0].disable_ipv6='1' 2>/dev/null || true
+uci commit samba4 2>/dev/null || true
+
+uci set luci.main.lang='zh_Hans' 2>/dev/null || true
+uci commit luci 2>/dev/null || true
 exit 0
-RPCD_EOF
-chmod +x files/etc/uci-defaults/98-rpcd-timeout
+OPT_EOF
+chmod +x files/etc/uci-defaults/98-system-optimize
+echo ">>> [6/6] 系统优化脚本已写入"
 
-echo ">>> [4/5] uhttpd / rpcd 优化脚本已写入"
-
-# =====================================================
-# 5. 自定义 Banner
-# =====================================================
+# Banner
 mkdir -p files/etc
 cat > files/etc/banner << 'BAN_EOF'
- __      __ _   _  _____   ___   ___   ___  
- \ \    / /| | | ||___ /  / _ \ / _ \ / _ \ 
+ __      __ _   _  _____   ___   ___   ___
+ \ \    / /| | | ||___ /  / _ \ / _ \ / _ \
   \ \/\/ / | |_| |  |_ \ | | | | | | | | | |
    \_/\_/   \___/  |___/ |_| |_|\___/ |_| |_|
   华思飞 WH3000 · LEDE · Kernel 6.6 LTS
 -------------------------------------------------
 BAN_EOF
 
-echo ">>> [5/5] Banner 已自定义"
-
 echo ""
 echo "======================================"
-echo " DIY 第二部分全部完成"
-echo " 主机名    : WH3000"
-echo " 主题      : luci-theme-design"
-echo " WiFi修复  : uci-defaults/10-wifi-init-fix"
-echo " Web优化   : uci-defaults/99-uhttpd-optimize"
+echo " DIY 第二部分完成（预置配置文件版）"
+echo " 无线配置：已预置 /etc/config/wireless"
+echo " 分区挂载：已预置 /etc/config/fstab"
+echo " Docker  ：已预置 /etc/config/docker"
 echo "======================================"
