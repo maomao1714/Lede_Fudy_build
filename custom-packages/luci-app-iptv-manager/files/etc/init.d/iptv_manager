@@ -12,10 +12,41 @@ _load_global() {
 	config_get PROGRAM global program  'rtp2httpd'
 }
 
-# ── rtp2HTTPd：委托给它自己的 init.d ─────────────────────────
-# 原因：rtp2httpd 二进制不直接读 UCI，是其 init.d 负责
-#       读取 /etc/config/rtp2httpd 并转成启动参数。
-#       直接启动二进制会导致所有配置参数失效，使用默认值。
+# ── msd_lite：委托给其自身 init.d ────────────────────────────
+# 原因：msd_lite 只接受 -c <config_file> 启动，不支持命令行参数配置。
+#       其 init.d 负责读取 UCI，生成 JSON/XML 配置文件，再以 -c 启动二进制。
+
+_start_msd() {
+	if [ ! -f /etc/init.d/msd_lite ]; then
+		logger -t iptv_manager -p daemon.err \
+			"找不到 /etc/init.d/msd_lite，请检查 msd_lite 是否正确安装"
+		return 1
+	fi
+
+	# 通过 UCI 启用 msd_lite（兼容不同 UCI section 命名方式）
+	uci -q set msd_lite.@msd_lite[0].enabled='1' 2>/dev/null || \
+	uci -q set msd_lite.msd_lite.enabled='1'     2>/dev/null || true
+	uci -q commit msd_lite 2>/dev/null || true
+
+	/etc/init.d/msd_lite start
+
+	logger -t iptv_manager -p daemon.info \
+		"启动 msd_lite（委托 /etc/init.d/msd_lite，配置由其自身读取）"
+}
+
+_stop_msd() {
+	if [ -f /etc/init.d/msd_lite ]; then
+		/etc/init.d/msd_lite stop
+		# 重新禁用，防止 msd_lite 独立开机自启
+		uci -q set msd_lite.@msd_lite[0].enabled='0' 2>/dev/null || \
+		uci -q set msd_lite.msd_lite.enabled='0'     2>/dev/null || true
+		uci -q commit msd_lite 2>/dev/null || true
+	fi
+	logger -t iptv_manager -p daemon.info "停止 msd_lite"
+}
+
+# ── rtp2HTTPd：委托给其自身 init.d ───────────────────────────
+# 原因：rtp2httpd 二进制不直接读 UCI，由其 init.d 负责解析配置并启动。
 
 _start_rtp2httpd() {
 	if [ ! -f /etc/init.d/rtp2httpd ]; then
@@ -24,8 +55,6 @@ _start_rtp2httpd() {
 		return 1
 	fi
 
-	# 将 rtp2httpd 自身 UCI 中的 disabled 改为 0
-	# 这样它的 init.d 才会正常读配置并启动
 	uci -q set rtp2httpd.@rtp2httpd[0].disabled='0'
 	uci -q commit rtp2httpd
 
@@ -38,46 +67,10 @@ _start_rtp2httpd() {
 _stop_rtp2httpd() {
 	[ -f /etc/init.d/rtp2httpd ] && /etc/init.d/rtp2httpd stop
 
-	# 重新将 disabled 设为 1，防止 rtp2httpd 独立开机自启（绕过我们的管理）
 	uci -q set rtp2httpd.@rtp2httpd[0].disabled='1'
 	uci -q commit rtp2httpd
 
 	logger -t iptv_manager -p daemon.info "停止 rtp2HTTPd"
-}
-
-# ── msd_lite：procd 直接管理，参数来自 /etc/config/iptv_manager ──
-
-_start_msd() {
-	local interface port source_prefix buffer extra_args
-
-	config_get interface     msd interface     'eth0'
-	config_get port          msd port          '4022'
-	config_get source_prefix msd source_prefix ''
-	config_get buffer        msd buffer        '4096'
-	config_get extra_args    msd extra_args    ''
-
-	if [ ! -x "$PROG_MSD" ]; then
-		logger -t iptv_manager -p daemon.err \
-			"msd_lite 未安装：$PROG_MSD 不存在"
-		return 1
-	fi
-
-	procd_open_instance "msd_lite"
-	procd_set_param command "$PROG_MSD"
-	procd_append_param command -i "$interface"
-	procd_append_param command -p "$port"
-	[ "$buffer" -gt 0 ] 2>/dev/null && \
-		procd_append_param command -b "$buffer"
-	[ -n "$source_prefix" ] && \
-		procd_append_param command -s "$source_prefix"
-	[ -n "$extra_args" ] && \
-		procd_append_param command $extra_args
-	procd_set_param respawn 3600 5 5
-	procd_set_param stderr 1
-	procd_close_instance
-
-	logger -t iptv_manager -p daemon.info \
-		"启动 msd_lite：接口=$interface 端口=$port"
 }
 
 # ── procd 回调 ────────────────────────────────────────────────
@@ -95,8 +88,7 @@ start_service() {
 		msd)       _start_msd       ;;
 		rtp2httpd) _start_rtp2httpd ;;
 		*)
-			logger -t iptv_manager -p daemon.err \
-				"未知程序：$PROGRAM"
+			logger -t iptv_manager -p daemon.err "未知程序：$PROGRAM"
 			;;
 	esac
 }
@@ -105,10 +97,11 @@ stop_service() {
 	config_load "$CONFIG_NAME"
 	_load_global
 
-	# rtp2httpd 不由 procd 实例管理，需手动停止
-	[ "$PROGRAM" = "rtp2httpd" ] && _stop_rtp2httpd
+	case "$PROGRAM" in
+		msd)       _stop_msd       ;;
+		rtp2httpd) _stop_rtp2httpd ;;
+	esac
 
-	# msd_lite 由 procd 自动停止其实例
 	logger -t iptv_manager -p daemon.info "IPTV Manager 停止"
 }
 
