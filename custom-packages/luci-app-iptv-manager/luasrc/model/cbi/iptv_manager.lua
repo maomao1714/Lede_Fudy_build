@@ -26,7 +26,7 @@ o:value("rtp2httpd", translate("rtp2HTTPd  —  功能完整的 IPTV HTTP 代理
 o.rmempty = false
 o.default = "rtp2httpd"
 
--- 注入 JS（切换两个区块显隐）
+-- 注入切换 JS
 m:section(SimpleSection).template = "iptv_manager/toggle_js"
 
 -- ── msd_lite 配置 ────────────────────────────────────────────
@@ -70,7 +70,6 @@ o.rmempty     = true
 
 -- ══════════════════════════════════════════════════════════════
 --  Map 2：rtp2HTTPd 原生配置  (/etc/config/rtp2httpd)
---  由 JS 根据程序选择控制整块显隐（id = cbi-rtp2httpd）
 -- ══════════════════════════════════════════════════════════════
 m2 = Map("rtp2httpd",
     translate("rtp2HTTPd 配置"),
@@ -88,12 +87,15 @@ o.placeholder = "5140"
 o.datatype    = "port"
 o.rmempty     = true
 
--- ── 接口配置 ──────────────────────────────────────────────
-o = s:option(Flag, "advanced_interface_settings",
-    translate("高级接口模式"),
-    translate("关闭：所有流量走同一接口；开启：组播/FCC/RTSP/HTTP 分别指定接口"))
-o.rmempty = true
-o.default = "0"
+-- ── 接口配置模式 ──────────────────────────────────────────
+-- 使用 ListValue 而非 Flag，确保 depends() 在页面加载时正确触发
+o = s:option(ListValue, "advanced_interface_settings",
+    translate("接口配置模式"),
+    translate("简单：所有流量走同一接口；高级：组播/FCC/RTSP/HTTP 分别指定"))
+o:value("0", translate("简单模式 — 统一上游接口"))
+o:value("1", translate("高级模式 — 分接口配置"))
+o.default  = "0"
+o.rmempty  = true
 
 -- 简单模式
 o = s:option(Value, "upstream_interface",
@@ -181,21 +183,20 @@ o.rmempty     = true
 -- ── M3U 频道列表 ──────────────────────────────────────────
 o = s:option(Value, "external_m3u",
     translate("外部 M3U 播放列表 URL"),
-    translate("从远程 URL 拉取频道列表，例如 https://example.com/playlist.m3u"))
+    translate("从远程 URL 拉取频道列表"))
 o.placeholder = "https://example.com/playlist.m3u"
 o.rmempty     = true
 
 o = s:option(Value, "external_m3u_update_interval",
     translate("M3U 更新间隔（秒）"),
-    translate("自动重拉 M3U 的周期，默认 7200 秒（2 小时）"))
+    translate("自动重拉 M3U 的周期，默认 7200 秒"))
 o.placeholder = "7200"
 o.datatype    = "uinteger"
 o.rmempty     = true
 
 -- ── HTTP / 安全 ───────────────────────────────────────────
 o = s:option(Value, "hostname",
-    translate("服务器主机名（可选）"),
-    translate("HTTP 响应中使用的主机名，留空使用默认"))
+    translate("服务器主机名（可选）"))
 o.placeholder = "somehost.example.com"
 o.rmempty     = true
 
@@ -207,7 +208,7 @@ o.default = "0"
 
 o = s:option(Value, "cors_allow_origin",
     translate("CORS 允许来源"),
-    translate("跨域请求允许的来源，* 表示所有；留空禁用 CORS"))
+    translate("* 表示所有；留空禁用 CORS"))
 o.placeholder = "*"
 o.rmempty     = true
 
@@ -228,33 +229,29 @@ o.rmempty     = true
 
 o = s:option(Value, "fcc_listen_port_range",
     translate("FCC 监听端口范围"),
-    translate("Fast Channel Change 使用的 UDP 端口范围，例如 40000-40100"))
+    translate("例如 40000-40100"))
 o.placeholder = "40000-40100"
 o.rmempty     = true
 
 -- ── HTTP 代理 / RTSP ──────────────────────────────────────
 o = s:option(Value, "http_proxy_user_agent",
-    translate("HTTP 代理 User-Agent"),
-    translate("拉取外部 M3U 或 HTTP 源时使用的 UA"))
+    translate("HTTP 代理 User-Agent"))
 o.placeholder = "rtp2httpd-http-proxy/1.0"
 o.rmempty     = true
 
 o = s:option(Value, "rtsp_user_agent",
-    translate("RTSP User-Agent"),
-    translate("RTSP 连接时使用的 UA"))
+    translate("RTSP User-Agent"))
 o.placeholder = "rtp2httpd/custom"
 o.rmempty     = true
 
 o = s:option(Value, "rtsp_stun_server",
-    translate("RTSP STUN 服务器"),
-    translate("RTSP NAT 穿透用 STUN 服务器地址"))
+    translate("RTSP STUN 服务器"))
 o.placeholder = "stun.miwifi.com"
 o.rmempty     = true
 
 -- ── FFmpeg ────────────────────────────────────────────────
 o = s:option(Value, "ffmpeg_path",
-    translate("FFmpeg 路径"),
-    translate("视频截图/转码功能所需的 ffmpeg 二进制路径，默认 ffmpeg"))
+    translate("FFmpeg 路径"))
 o.placeholder = "ffmpeg"
 o.rmempty     = true
 
