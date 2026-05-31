@@ -5,13 +5,47 @@ STOP=15
 USE_PROCD=1
 
 PROG_MSD="/usr/bin/msd_lite"
-PROG_RTP2HTTPD="/usr/bin/rtp2httpd"
 CONFIG_NAME="iptv_manager"
 
 _load_global() {
-	config_get ENABLED  global enabled  '0'
-	config_get PROGRAM  global program  'rtp2httpd'
+	config_get ENABLED global enabled  '0'
+	config_get PROGRAM global program  'rtp2httpd'
 }
+
+# ── rtp2HTTPd：委托给它自己的 init.d ─────────────────────────
+# 原因：rtp2httpd 二进制不直接读 UCI，是其 init.d 负责
+#       读取 /etc/config/rtp2httpd 并转成启动参数。
+#       直接启动二进制会导致所有配置参数失效，使用默认值。
+
+_start_rtp2httpd() {
+	if [ ! -f /etc/init.d/rtp2httpd ]; then
+		logger -t iptv_manager -p daemon.err \
+			"找不到 /etc/init.d/rtp2httpd，rtp2httpd feed 是否已安装？"
+		return 1
+	fi
+
+	# 将 rtp2httpd 自身 UCI 中的 disabled 改为 0
+	# 这样它的 init.d 才会正常读配置并启动
+	uci -q set rtp2httpd.@rtp2httpd[0].disabled='0'
+	uci -q commit rtp2httpd
+
+	/etc/init.d/rtp2httpd start
+
+	logger -t iptv_manager -p daemon.info \
+		"启动 rtp2HTTPd（委托 /etc/init.d/rtp2httpd，配置来自 /etc/config/rtp2httpd）"
+}
+
+_stop_rtp2httpd() {
+	[ -f /etc/init.d/rtp2httpd ] && /etc/init.d/rtp2httpd stop
+
+	# 重新将 disabled 设为 1，防止 rtp2httpd 独立开机自启（绕过我们的管理）
+	uci -q set rtp2httpd.@rtp2httpd[0].disabled='1'
+	uci -q commit rtp2httpd
+
+	logger -t iptv_manager -p daemon.info "停止 rtp2HTTPd"
+}
+
+# ── msd_lite：procd 直接管理，参数来自 /etc/config/iptv_manager ──
 
 _start_msd() {
 	local interface port source_prefix buffer extra_args
@@ -46,23 +80,7 @@ _start_msd() {
 		"启动 msd_lite：接口=$interface 端口=$port"
 }
 
-_start_rtp2httpd() {
-	# rtp2HTTPd 自己读取 /etc/config/rtp2httpd，无需传参
-	if [ ! -x "$PROG_RTP2HTTPD" ]; then
-		logger -t iptv_manager -p daemon.err \
-			"rtp2httpd 未安装：$PROG_RTP2HTTPD 不存在"
-		return 1
-	fi
-
-	procd_open_instance "rtp2httpd"
-	procd_set_param command "$PROG_RTP2HTTPD"
-	procd_set_param respawn 3600 5 5
-	procd_set_param stderr 1
-	procd_close_instance
-
-	logger -t iptv_manager -p daemon.info \
-		"启动 rtp2HTTPd（配置来源：/etc/config/rtp2httpd）"
-}
+# ── procd 回调 ────────────────────────────────────────────────
 
 start_service() {
 	config_load "$CONFIG_NAME"
@@ -84,6 +102,13 @@ start_service() {
 }
 
 stop_service() {
+	config_load "$CONFIG_NAME"
+	_load_global
+
+	# rtp2httpd 不由 procd 实例管理，需手动停止
+	[ "$PROGRAM" = "rtp2httpd" ] && _stop_rtp2httpd
+
+	# msd_lite 由 procd 自动停止其实例
 	logger -t iptv_manager -p daemon.info "IPTV Manager 停止"
 }
 
