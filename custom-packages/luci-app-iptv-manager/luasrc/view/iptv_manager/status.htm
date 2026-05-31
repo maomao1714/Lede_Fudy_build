@@ -6,7 +6,9 @@ local enabled    = uci:get("iptv_manager", "global", "enabled") or "0"
 local program    = uci:get("iptv_manager", "global", "program") or "rtp2httpd"
 local prog_bin   = (program == "msd") and "msd_lite" or "rtp2httpd"
 local prog_label = (program == "msd") and "msd_lite" or "rtp2HTTPd"
-local is_running = (sys.call("pgrep -x " .. prog_bin .. " >/dev/null 2>&1") == 0)
+
+-- 用 pidof 检测进程，busybox 通用，比 pgrep -x 更可靠
+local is_running = (sys.call("pidof " .. prog_bin .. " >/dev/null 2>&1") == 0)
 
 local port = ""
 if program == "msd" then
