@@ -1,4 +1,4 @@
-name: 编译 Fudy_pro 固件（WH3000pro系列）
+name: 编译 Fudy/Fudy-pro 固件（WH3000pro系列）
 
 on:
   workflow_dispatch:
