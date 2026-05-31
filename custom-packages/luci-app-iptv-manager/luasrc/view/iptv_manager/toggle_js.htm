@@ -1,0 +1,45 @@
+<script type="text/javascript">
+(function () {
+    "use strict";
+
+    var MSD_SECTION_ID = "cbi-iptv_manager-msd";
+    var RTP_SECTION_ID = "cbi-iptv_manager-rtp2httpd";
+    var SELECTOR_NAME  = "cbid.iptv_manager.global.program";
+
+    function getSection(id) {
+        return document.getElementById(id) ||
+               document.querySelector('[id="' + id + '"]');
+    }
+
+    function toggleSections(value) {
+        var msdEl = getSection(MSD_SECTION_ID);
+        var rtpEl = getSection(RTP_SECTION_ID);
+        if (!msdEl || !rtpEl) return;
+
+        if (value === "msd") {
+            msdEl.style.display = "";
+            rtpEl.style.display = "none";
+        } else {
+            msdEl.style.display = "none";
+            rtpEl.style.display = "";
+        }
+    }
+
+    function init() {
+        var selector = document.querySelector(
+            '[name="' + SELECTOR_NAME + '"]'
+        );
+        if (!selector) return;
+        toggleSections(selector.value);
+        selector.addEventListener("change", function () {
+            toggleSections(this.value);
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", init);
+    } else {
+        init();
+    }
+})();
+</script>
