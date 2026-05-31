@@ -2,44 +2,35 @@
 (function () {
     "use strict";
 
+    /* Map 1 内的 msd 配置区 */
     var MSD_SECTION_ID = "cbi-iptv_manager-msd";
-    var RTP_SECTION_ID = "cbi-iptv_manager-rtp2httpd";
+    /* Map 2 整体（rtp2httpd 的独立 Map，id = "cbi-rtp2httpd"） */
+    var RTP_MAP_ID     = "cbi-rtp2httpd";
+    /* 程序选择下拉框 name */
     var SELECTOR_NAME  = "cbid.iptv_manager.global.program";
 
-    function getSection(id) {
-        return document.getElementById(id) ||
-               document.querySelector('[id="' + id + '"]');
-    }
-
-    function toggleSections(value) {
-        var msdEl = getSection(MSD_SECTION_ID);
-        var rtpEl = getSection(RTP_SECTION_ID);
-        if (!msdEl || !rtpEl) return;
+    function toggle(value) {
+        var msdEl  = document.getElementById(MSD_SECTION_ID);
+        var rtpMap = document.getElementById(RTP_MAP_ID);
 
         if (value === "msd") {
-            msdEl.style.display = "";
-            rtpEl.style.display = "none";
+            if (msdEl)  msdEl.style.display  = "";
+            if (rtpMap) rtpMap.style.display  = "none";
         } else {
-            msdEl.style.display = "none";
-            rtpEl.style.display = "";
+            if (msdEl)  msdEl.style.display  = "none";
+            if (rtpMap) rtpMap.style.display  = "";
         }
     }
 
     function init() {
-        var selector = document.querySelector(
-            '[name="' + SELECTOR_NAME + '"]'
-        );
-        if (!selector) return;
-        toggleSections(selector.value);
-        selector.addEventListener("change", function () {
-            toggleSections(this.value);
-        });
+        var sel = document.querySelector('[name="' + SELECTOR_NAME + '"]');
+        if (!sel) return;
+        toggle(sel.value);
+        sel.addEventListener("change", function () { toggle(this.value); });
     }
 
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", init);
-    } else {
-        init();
-    }
+    document.readyState === "loading"
+        ? document.addEventListener("DOMContentLoaded", init)
+        : init();
 })();
 </script>
