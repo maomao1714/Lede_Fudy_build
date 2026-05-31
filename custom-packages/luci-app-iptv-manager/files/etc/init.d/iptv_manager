@@ -1,0 +1,129 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=15
+USE_PROCD=1
+
+PROG_MSD="/usr/bin/msd_lite"
+PROG_RTP2HTTPD="/usr/bin/rtp2httpd"
+CONFIG_NAME="iptv_manager"
+
+_load_global() {
+	config_get ENABLED  global enabled  '0'
+	config_get PROGRAM  global program  'rtp2httpd'
+}
+
+_start_msd() {
+	local interface port source_prefix buffer extra_args
+
+	config_get interface     msd interface     'eth0'
+	config_get port          msd port          '4022'
+	config_get source_prefix msd source_prefix ''
+	config_get buffer        msd buffer        '4096'
+	config_get extra_args    msd extra_args    ''
+
+	if [ ! -x "$PROG_MSD" ]; then
+		logger -t iptv_manager -p daemon.err \
+			"msd_lite 未安装：$PROG_MSD 不存在"
+		return 1
+	fi
+
+	procd_open_instance "msd_lite"
+	procd_set_param command "$PROG_MSD"
+	procd_append_param command -i "$interface"
+	procd_append_param command -p "$port"
+	[ "$buffer" -gt 0 ] 2>/dev/null && \
+		procd_append_param command -b "$buffer"
+	[ -n "$source_prefix" ] && \
+		procd_append_param command -s "$source_prefix"
+	[ -n "$extra_args" ] && \
+		procd_append_param command $extra_args
+	procd_set_param respawn 3600 5 5
+	procd_set_param stderr 1
+	procd_close_instance
+
+	logger -t iptv_manager -p daemon.info \
+		"启动 msd_lite：接口=$interface 端口=$port 缓冲=$buffer"
+}
+
+_start_rtp2httpd() {
+	local http_addr http_port interface buffer playlist \
+	      udpxy_compat max_clients source_ip log_level \
+	      url_prefix extra_args
+
+	config_get http_addr    rtp2httpd http_addr    '0.0.0.0'
+	config_get http_port    rtp2httpd http_port    '8080'
+	config_get interface    rtp2httpd interface    'eth0'
+	config_get buffer       rtp2httpd buffer       '65536'
+	config_get playlist     rtp2httpd playlist     ''
+	config_get udpxy_compat rtp2httpd udpxy_compat '0'
+	config_get max_clients  rtp2httpd max_clients  '10'
+	config_get source_ip    rtp2httpd source_ip    ''
+	config_get log_level    rtp2httpd log_level    'warning'
+	config_get url_prefix   rtp2httpd url_prefix   ''
+	config_get extra_args   rtp2httpd extra_args   ''
+
+	if [ ! -x "$PROG_RTP2HTTPD" ]; then
+		logger -t iptv_manager -p daemon.err \
+			"rtp2httpd 未安装：$PROG_RTP2HTTPD 不存在"
+		return 1
+	fi
+
+	procd_open_instance "rtp2httpd"
+	procd_set_param command "$PROG_RTP2HTTPD"
+	procd_append_param command -l "$http_addr"
+	procd_append_param command -p "$http_port"
+	procd_append_param command -i "$interface"
+	[ "$buffer" -gt 0 ] 2>/dev/null && \
+		procd_append_param command -b "$buffer"
+	[ -n "$playlist" ] && [ -f "$playlist" ] && \
+		procd_append_param command -m "$playlist"
+	[ "$udpxy_compat" = "1" ] && \
+		procd_append_param command -u
+	[ "$max_clients" -gt 0 ] 2>/dev/null && \
+		procd_append_param command -c "$max_clients"
+	[ -n "$source_ip" ] && \
+		procd_append_param command -s "$source_ip"
+	[ -n "$url_prefix" ] && \
+		procd_append_param command -P "$url_prefix"
+	[ -n "$extra_args" ] && \
+		procd_append_param command $extra_args
+	procd_set_param respawn 3600 5 5
+	procd_set_param stderr 1
+	procd_close_instance
+
+	logger -t iptv_manager -p daemon.info \
+		"启动 rtp2HTTPd：${http_addr}:${http_port} 接口=$interface"
+}
+
+start_service() {
+	config_load "$CONFIG_NAME"
+	_load_global
+
+	[ "$ENABLED" = "1" ] || {
+		logger -t iptv_manager -p daemon.info "IPTV Manager 未启用，跳过"
+		return 0
+	}
+
+	case "$PROGRAM" in
+		msd)       _start_msd       ;;
+		rtp2httpd) _start_rtp2httpd ;;
+		*)
+			logger -t iptv_manager -p daemon.err \
+				"未知程序：$PROGRAM"
+			;;
+	esac
+}
+
+stop_service() {
+	logger -t iptv_manager -p daemon.info "IPTV Manager 停止"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$CONFIG_NAME"
+}
+
+reload_service() {
+	stop
+	start
+}
