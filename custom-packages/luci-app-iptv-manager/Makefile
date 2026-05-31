@@ -44,6 +44,8 @@ define Package/luci-app-iptv-manager/install
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/iptv_manager
 	$(INSTALL_DATA) ./luasrc/view/iptv_manager/toggle_js.htm \
 	    $(1)/usr/lib/lua/luci/view/iptv_manager/toggle_js.htm
+	$(INSTALL_DATA) ./luasrc/view/iptv_manager/status.htm \
+	    $(1)/usr/lib/lua/luci/view/iptv_manager/status.htm
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/iptv_manager \
