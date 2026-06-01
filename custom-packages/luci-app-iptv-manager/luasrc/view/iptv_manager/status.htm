@@ -4,12 +4,19 @@ local sys     = require "luci.sys"
 
 local enabled    = uci:get("iptv_manager", "global", "enabled") or "0"
 local program    = uci:get("iptv_manager", "global", "program") or "rtp2httpd"
-local prog_bin   = (program == "msd") and "msd_lite" or "rtp2httpd"
 local prog_label = (program == "msd") and "msd_lite" or "rtp2HTTPd"
-local is_running = (sys.call("pidof " .. prog_bin .. " >/dev/null 2>&1") == 0)
 
--- msd_lite：named section "config"
--- rtp2httpd：anonymous section，必须用 foreach 读取
+-- msd_lite 实际运行的是 rtp2httpd 二进制，pidof msd_lite 永远找不到
+-- 两个程序都用 init.d running 检测，这是唯一可靠的方式
+local is_running = false
+if program == "msd" then
+    is_running = (sys.call(
+        "/etc/init.d/msd_lite running >/dev/null 2>&1") == 0)
+else
+    is_running = (sys.call(
+        "/etc/init.d/rtp2httpd running >/dev/null 2>&1") == 0)
+end
+
 local port = ""
 if program == "msd" then
     port = uci:get("msd_lite", "config", "port") or "4022"
@@ -37,7 +44,8 @@ end
     </div>
     <div style="font-size:12px;color:#888;margin-top:3px;">
       <%=translate("服务开关")%>：
-      <strong><%= enabled == "1" and translate("已启用") or translate("未启用") %></strong>
+      <strong><%= enabled == "1"
+          and translate("已启用") or translate("未启用") %></strong>
       <% if is_running and port ~= "" then %>
         &nbsp;|&nbsp;<%=translate("端口")%>：<strong><%= port %></strong>
       <% end %>
