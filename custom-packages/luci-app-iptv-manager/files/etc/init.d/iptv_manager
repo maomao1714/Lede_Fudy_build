@@ -4,72 +4,52 @@ START=95
 STOP=15
 USE_PROCD=1
 
-PROG_MSD="/usr/bin/msd_lite"
 CONFIG_NAME="iptv_manager"
 
 _load_global() {
-	config_get ENABLED global enabled  '0'
-	config_get PROGRAM global program  'rtp2httpd'
+	config_get ENABLED global enabled '0'
+	config_get PROGRAM global program 'rtp2httpd'
 }
 
-# ── msd_lite：委托给其自身 init.d ────────────────────────────
-# 原因：msd_lite 只接受 -c <config_file> 启动，不支持命令行参数配置。
-#       其 init.d 负责读取 UCI，生成 JSON/XML 配置文件，再以 -c 启动二进制。
+# ── msd_lite ──────────────────────────────────────────────────
+# UCI 结构：/etc/config/msd_lite，section 名 = config，启用选项 = enable
 
 _start_msd() {
 	if [ ! -f /etc/init.d/msd_lite ]; then
-		logger -t iptv_manager -p daemon.err \
-			"找不到 /etc/init.d/msd_lite，请检查 msd_lite 是否正确安装"
+		logger -t iptv_manager -p daemon.err "找不到 /etc/init.d/msd_lite"
 		return 1
 	fi
-
-	# 通过 UCI 启用 msd_lite（兼容不同 UCI section 命名方式）
-	uci -q set msd_lite.@msd_lite[0].enabled='1' 2>/dev/null || \
-	uci -q set msd_lite.msd_lite.enabled='1'     2>/dev/null || true
-	uci -q commit msd_lite 2>/dev/null || true
-
+	# 正确路径：msd_lite.config.enable（不是 msd_lite.msd_lite.enabled）
+	uci -q set msd_lite.config.enable='1'
+	uci -q commit msd_lite
 	/etc/init.d/msd_lite start
-
-	logger -t iptv_manager -p daemon.info \
-		"启动 msd_lite（委托 /etc/init.d/msd_lite，配置由其自身读取）"
+	logger -t iptv_manager -p daemon.info "启动 msd_lite"
 }
 
 _stop_msd() {
-	if [ -f /etc/init.d/msd_lite ]; then
-		/etc/init.d/msd_lite stop
-		# 重新禁用，防止 msd_lite 独立开机自启
-		uci -q set msd_lite.@msd_lite[0].enabled='0' 2>/dev/null || \
-		uci -q set msd_lite.msd_lite.enabled='0'     2>/dev/null || true
-		uci -q commit msd_lite 2>/dev/null || true
-	fi
+	[ -f /etc/init.d/msd_lite ] && /etc/init.d/msd_lite stop
+	uci -q set msd_lite.config.enable='0'
+	uci -q commit msd_lite
 	logger -t iptv_manager -p daemon.info "停止 msd_lite"
 }
 
-# ── rtp2HTTPd：委托给其自身 init.d ───────────────────────────
-# 原因：rtp2httpd 二进制不直接读 UCI，由其 init.d 负责解析配置并启动。
+# ── rtp2HTTPd ─────────────────────────────────────────────────
 
 _start_rtp2httpd() {
 	if [ ! -f /etc/init.d/rtp2httpd ]; then
-		logger -t iptv_manager -p daemon.err \
-			"找不到 /etc/init.d/rtp2httpd，rtp2httpd feed 是否已安装？"
+		logger -t iptv_manager -p daemon.err "找不到 /etc/init.d/rtp2httpd"
 		return 1
 	fi
-
 	uci -q set rtp2httpd.@rtp2httpd[0].disabled='0'
 	uci -q commit rtp2httpd
-
 	/etc/init.d/rtp2httpd start
-
-	logger -t iptv_manager -p daemon.info \
-		"启动 rtp2HTTPd（委托 /etc/init.d/rtp2httpd，配置来自 /etc/config/rtp2httpd）"
+	logger -t iptv_manager -p daemon.info "启动 rtp2HTTPd"
 }
 
 _stop_rtp2httpd() {
 	[ -f /etc/init.d/rtp2httpd ] && /etc/init.d/rtp2httpd stop
-
 	uci -q set rtp2httpd.@rtp2httpd[0].disabled='1'
 	uci -q commit rtp2httpd
-
 	logger -t iptv_manager -p daemon.info "停止 rtp2HTTPd"
 }
 
@@ -80,7 +60,7 @@ start_service() {
 	_load_global
 
 	[ "$ENABLED" = "1" ] || {
-		logger -t iptv_manager -p daemon.info "IPTV Manager 未启用，跳过"
+		logger -t iptv_manager "未启用，跳过"
 		return 0
 	}
 
@@ -94,20 +74,16 @@ start_service() {
 }
 
 stop_service() {
-	config_load "$CONFIG_NAME"
-	_load_global
-
-	case "$PROGRAM" in
-		msd)       _stop_msd       ;;
-		rtp2httpd) _stop_rtp2httpd ;;
-	esac
-
-	logger -t iptv_manager -p daemon.info "IPTV Manager 停止"
+	# 每次停止时两个都停，避免切换程序时旧程序残留后台
+	_stop_msd
+	_stop_rtp2httpd
+	logger -t iptv_manager "IPTV Manager 停止"
 }
 
 service_triggers() {
 	procd_add_reload_trigger "$CONFIG_NAME"
 	procd_add_reload_trigger "rtp2httpd"
+	# 不监听 msd_lite，避免 start_service 写 enable=1 时触发重启循环
 }
 
 reload_service() {
