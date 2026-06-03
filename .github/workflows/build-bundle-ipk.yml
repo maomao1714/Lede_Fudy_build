@@ -1,8 +1,5 @@
 name: Build IPTV Manager Bundle IPK
 
-# 触发方式：
-# 1. 推 tag：git tag bundle-v1.0.0 && git push origin bundle-v1.0.0
-# 2. Actions 页面手动点「Run workflow」
 on:
   push:
     tags: [ 'bundle-v*' ]
@@ -18,13 +15,12 @@ permissions:
 
 jobs:
   build-bundle:
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 对 OpenWrt SDK 兼容性更好
+    # ubuntu-latest 已是 24.04，libncurses5-dev 等包已废弃
+    runs-on: ubuntu-22.04
 
     env:
-      # OpenWrt 23.05 SDK for MediaTek Filogic (MT7981 / WH3000 Pro / aarch64_cortex-a53)
-      SDK_URL: >-
-        https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/
-        openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+      SDK_URL: "https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
       TARGET_ARCH: aarch64_cortex-a53
 
     steps:
@@ -35,8 +31,12 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
-            build-essential gawk unzip python3 \
-            libncurses5-dev libssl-dev zlib1g-dev wget
+            build-essential clang flex bison gawk \
+            gcc-multilib g++-multilib gettext \
+            libncurses-dev libssl-dev zlib1g-dev \
+            libfl-dev pkgconf rsync \
+            python3 python3-setuptools \
+            unzip wget git
 
       - name: Determine version
         id: ver
@@ -54,18 +54,15 @@ jobs:
 
       - name: Download OpenWrt SDK
         run: |
-          # 去掉 YAML 折行符号，拼成完整 URL
-          SDK_URL=$(echo "$SDK_URL" | tr -d ' \n')
-          echo "SDK URL: $SDK_URL"
+          echo "下载 SDK..."
           wget -q "$SDK_URL" -O sdk.tar.xz
           tar xf sdk.tar.xz
           mv openwrt-sdk-* sdk
-          echo "SDK 解压完成"
+          echo "SDK 解压完成，目录：$(ls sdk/)"
 
       - name: Configure SDK feeds
         run: |
           cd sdk
-          # 添加 rtp2httpd feed（stackia 原版）
           echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" \
             >> feeds.conf.default
           ./scripts/feeds update -a
@@ -74,12 +71,10 @@ jobs:
       - name: Add custom packages
         run: |
           cd sdk
-          # msd_lite（ximiTech 版，基于 rtp2httpd）
           git clone --depth=1 \
             https://github.com/ximiTech/msd_lite \
             package/msd_lite
 
-          # 我们的 LuCI 界面
           cp -r "$GITHUB_WORKSPACE/custom-packages/luci-app-iptv-manager" \
             package/luci-app-iptv-manager
 
@@ -87,25 +82,23 @@ jobs:
         run: |
           cd sdk
 
-          # 启用三个包
           {
             echo "CONFIG_PACKAGE_rtp2httpd=y"
             echo "CONFIG_PACKAGE_msd_lite=y"
             echo "CONFIG_PACKAGE_luci-app-iptv-manager=y"
           } >> .config
+
           make defconfig
 
-          # 编译（并行）
           echo "--- 编译 rtp2httpd ---"
-          make package/rtp2httpd/compile -j$(nproc) V=s 2>&1 | tail -20
+          make package/rtp2httpd/compile -j$(nproc) V=s 2>&1 | tail -30
 
           echo "--- 编译 msd_lite ---"
-          make package/msd_lite/compile -j$(nproc) V=s 2>&1 | tail -20
+          make package/msd_lite/compile -j$(nproc) V=s 2>&1 | tail -30
 
           echo "--- 编译 luci-app-iptv-manager ---"
-          make package/luci-app-iptv-manager/compile -j$(nproc) V=s 2>&1 | tail -20
+          make package/luci-app-iptv-manager/compile -j$(nproc) V=s 2>&1 | tail -30
 
-          # 收集产出 IPK
           mkdir -p "$GITHUB_WORKSPACE/built-ipks"
           find bin/packages -name "*.ipk" \
             | grep -E "(rtp2httpd|msd_lite|luci-app-iptv-manager)" \
@@ -126,9 +119,6 @@ jobs:
             "$GITHUB_WORKSPACE/built-ipks" \
             "$GITHUB_WORKSPACE"
 
-          echo "IPK_NAME=$(ls $GITHUB_WORKSPACE/iptv-manager-bundle_*.ipk \
-            | xargs basename)" >> "$GITHUB_ENV"
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -147,18 +137,16 @@ jobs:
           body: |
             ## IPTV Manager Bundle v${{ steps.ver.outputs.version }}
 
-            **一键安装包**，包含 msd_lite 与 rtp2HTTPd 主程序及 LuCI 管理界面，无需单独安装依赖。
+            **一键安装包**，包含 msd_lite、rtp2HTTPd 主程序及 LuCI 管理界面。
 
             ### 适用设备
-            架构：`aarch64_cortex-a53`
-            适用于 MediaTek Filogic / MT7981 平台（WH3000 Pro 等），以及其他运行此架构 OpenWrt/LEDE 的路由器。
+            架构：`aarch64_cortex-a53`（MediaTek Filogic / MT7981，WH3000 Pro 等）
 
             ### 安装方式
-            将 IPK 文件上传到路由器后，SSH 执行：
             ```sh
             opkg install /tmp/iptv-manager-bundle_*.ipk
             ```
-            安装完成后刷新浏览器，在「**服务**」→「**IPTV 管理**」进行配置。
+            安装后刷新浏览器，「服务」→「IPTV 管理」。
 
             ### 卸载
             ```sh
@@ -169,13 +157,10 @@ jobs:
 
             ### 引用的开源项目
 
-            本项目在编译时使用了以下开源项目的源代码，感谢原作者的贡献：
-
-            | 组件 | 来源仓库 | 说明 |
+            | 组件 | 来源 | 说明 |
             |---|---|---|
-            | **rtp2httpd** | [stackia/rtp2httpd](https://github.com/stackia/rtp2httpd) | RTP/UDP 组播 → HTTP 代理，功能完整版 |
-            | **msd_lite** | [ximiTech/msd_lite](https://github.com/ximiTech/msd_lite) | 轻量级组播转发，基于 rtp2httpd 定制 |
-            | LuCI 界面 | 本仓库 | 二合一统一管理界面（新开发） |
+            | **rtp2httpd** | [stackia/rtp2httpd](https://github.com/stackia/rtp2httpd) | RTP/UDP 组播 → HTTP 代理 |
+            | **msd_lite** | [ximiTech/msd_lite](https://github.com/ximiTech/msd_lite) | 轻量级组播转发 |
+            | **LuCI 界面** | 本仓库 | 二合一统一管理界面 |
 
-            本项目 LuCI 界面部分为原创开发，主程序二进制编译自上述两个开源仓库，
-            遵循各原项目的开源协议。
+            本项目 LuCI 界面为原创开发，主程序二进制编译自上述开源仓库，遵循各原项目开源协议。
