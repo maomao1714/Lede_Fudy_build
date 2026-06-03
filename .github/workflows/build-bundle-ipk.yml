@@ -15,8 +15,6 @@ permissions:
 
 jobs:
   build-bundle:
-    # ubuntu-22.04 对 OpenWrt SDK 兼容性更好
-    # ubuntu-latest 已是 24.04，libncurses5-dev 等包已废弃
     runs-on: ubuntu-22.04
 
     env:
@@ -33,10 +31,12 @@ jobs:
           sudo apt-get install -y \
             build-essential clang flex bison gawk \
             gcc-multilib g++-multilib gettext \
-            libncurses-dev libssl-dev zlib1g-dev \
+            libncurses-dev libncursesw5-dev \
+            libssl-dev zlib1g-dev libelf-dev \
             libfl-dev pkgconf rsync \
-            python3 python3-setuptools \
-            unzip wget git
+            python3 python3-setuptools python3-distutils \
+            python-is-python3 \
+            perl unzip wget git curl xz-utils
 
       - name: Determine version
         id: ver
@@ -58,7 +58,7 @@ jobs:
           wget -q "$SDK_URL" -O sdk.tar.xz
           tar xf sdk.tar.xz
           mv openwrt-sdk-* sdk
-          echo "SDK 解压完成，目录：$(ls sdk/)"
+          echo "SDK 解压完成"
 
       - name: Configure SDK feeds
         run: |
@@ -74,7 +74,6 @@ jobs:
           git clone --depth=1 \
             https://github.com/ximiTech/msd_lite \
             package/msd_lite
-
           cp -r "$GITHUB_WORKSPACE/custom-packages/luci-app-iptv-manager" \
             package/luci-app-iptv-manager
 
@@ -82,19 +81,42 @@ jobs:
         run: |
           cd sdk
 
+          echo "=== Build Environment ==="
+          gcc --version | head -1
+          flex --version | head -1
+          bison --version | head -1
+          python3 --version
+          python --version 2>&1 || echo "python: not found"
+          echo "========================="
+
+          # 预编译 kconfig conf 工具，失败时显示完整报错
+          echo "=== Pre-building kconfig conf tool ==="
+          make -j1 V=sc -C scripts/config/ conf 2>&1 | tail -80 || {
+            echo "WARNING: scripts/config/conf 预编译失败，继续尝试 defconfig"
+          }
+
+          # 启用目标包
           {
             echo "CONFIG_PACKAGE_rtp2httpd=y"
             echo "CONFIG_PACKAGE_msd_lite=y"
             echo "CONFIG_PACKAGE_luci-app-iptv-manager=y"
           } >> .config
 
-          make defconfig
+          # make defconfig，失败时输出完整详情
+          echo "=== Running make defconfig ==="
+          make defconfig 2>&1 || {
+            echo ""
+            echo "====== defconfig FAILED — verbose output ======"
+            make -j1 V=sc defconfig 2>&1 | head -200
+            echo "==============================================="
+            exit 1
+          }
 
           echo "--- 编译 rtp2httpd ---"
-          make package/rtp2httpd/compile -j$(nproc) V=s 2>&1 | tail -30
+          make package/rtp2httpd/compile -j$(nproc) V=s 2>&1 | tail -50
 
           echo "--- 编译 msd_lite ---"
-          make package/msd_lite/compile -j$(nproc) V=s 2>&1 | tail -30
+          make package/msd_lite/compile -j$(nproc) V=s 2>&1 | tail -50
 
           echo "--- 编译 luci-app-iptv-manager ---"
           make package/luci-app-iptv-manager/compile -j$(nproc) V=s 2>&1 | tail -30
@@ -143,6 +165,7 @@ jobs:
             架构：`aarch64_cortex-a53`（MediaTek Filogic / MT7981，WH3000 Pro 等）
 
             ### 安装方式
+            将 IPK 上传到路由器后 SSH 执行：
             ```sh
             opkg install /tmp/iptv-manager-bundle_*.ipk
             ```
