@@ -17,26 +17,9 @@ jobs:
   build-bundle:
     runs-on: ubuntu-22.04
 
-    env:
-      SDK_URL: "https://downloads.openwrt.org/releases/23.05.5/targets/mediatek/filogic/openwrt-sdk-23.05.5-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      TARGET_ARCH: aarch64_cortex-a53
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y \
-            build-essential clang flex bison gawk \
-            gcc-multilib g++-multilib gettext \
-            libncurses-dev libncursesw5-dev \
-            libssl-dev zlib1g-dev libelf-dev \
-            libfl-dev pkgconf rsync \
-            python3 python3-setuptools python3-distutils \
-            python-is-python3 \
-            perl unzip wget git curl xz-utils
 
       - name: Determine version
         id: ver
@@ -52,93 +35,58 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "构建版本：$VER"
 
-      - name: Download OpenWrt SDK
+      - name: Prepare packages
         run: |
-          echo "下载 SDK..."
-          wget -q "$SDK_URL" -O sdk.tar.xz
-          tar xf sdk.tar.xz
-          mv openwrt-sdk-* sdk
-          echo "SDK 解压完成"
+          # gh-action-sdk 把工作区根目录当 feed
+          # 把 LuCI 包复制到根目录
+          cp -r custom-packages/luci-app-iptv-manager .
 
-      - name: Configure SDK feeds
-        run: |
-          cd sdk
-          echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" \
-            >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Add custom packages
-        run: |
-          cd sdk
+          # 克隆 msd_lite（ximiTech 版）到根目录
           git clone --depth=1 \
             https://github.com/ximiTech/msd_lite \
-            package/msd_lite
-          cp -r "$GITHUB_WORKSPACE/custom-packages/luci-app-iptv-manager" \
-            package/luci-app-iptv-manager
+            msd_lite
 
-      - name: Configure and compile packages
+      - name: Build packages
+        uses: openwrt/gh-action-sdk@v7
+        env:
+          # 目标架构：MediaTek Filogic / MT7981 / WH3000 Pro
+          ARCH: aarch64_cortex-a53-23.05.5
+          # 要构建的包（空格分隔）
+          PACKAGES: luci-app-iptv-manager msd_lite rtp2httpd
+          # 本仓库 feed 名称
+          FEEDNAME: iptv_bundle
+          # 额外 feed：rtp2httpd 来自 stackia 仓库
+          EXTRA_FEEDS: src-git rtp2httpd https://github.com/stackia/rtp2httpd.git
+          # 允许使用默认 feed 提供基础依赖
+          NO_DEFAULT_FEEDS: 0
+
+      - name: Collect built IPKs
         run: |
-          cd sdk
+          mkdir -p built-ipks
 
-          echo "=== Build Environment ==="
-          gcc --version | head -1
-          flex --version | head -1
-          bison --version | head -1
-          python3 --version
-          python --version 2>&1 || echo "python: not found"
-          echo "========================="
-
-          # 预编译 kconfig conf 工具，失败时显示完整报错
-          echo "=== Pre-building kconfig conf tool ==="
-          make -j1 V=sc -C scripts/config/ conf 2>&1 | tail -80 || {
-            echo "WARNING: scripts/config/conf 预编译失败，继续尝试 defconfig"
-          }
-
-          # 启用目标包
-          {
-            echo "CONFIG_PACKAGE_rtp2httpd=y"
-            echo "CONFIG_PACKAGE_msd_lite=y"
-            echo "CONFIG_PACKAGE_luci-app-iptv-manager=y"
-          } >> .config
-
-          # make defconfig，失败时输出完整详情
-          echo "=== Running make defconfig ==="
-          make defconfig 2>&1 || {
-            echo ""
-            echo "====== defconfig FAILED — verbose output ======"
-            make -j1 V=sc defconfig 2>&1 | head -200
-            echo "==============================================="
-            exit 1
-          }
-
-          echo "--- 编译 rtp2httpd ---"
-          make package/rtp2httpd/compile -j$(nproc) V=s 2>&1 | tail -50
-
-          echo "--- 编译 msd_lite ---"
-          make package/msd_lite/compile -j$(nproc) V=s 2>&1 | tail -50
-
-          echo "--- 编译 luci-app-iptv-manager ---"
-          make package/luci-app-iptv-manager/compile -j$(nproc) V=s 2>&1 | tail -30
-
-          mkdir -p "$GITHUB_WORKSPACE/built-ipks"
-          find bin/packages -name "*.ipk" \
+          # 搜索所有可能的输出目录
+          find "$GITHUB_WORKSPACE" -name "*.ipk" 2>/dev/null \
             | grep -E "(rtp2httpd|msd_lite|luci-app-iptv-manager)" \
             | while read -r f; do
                 echo "  收集: $(basename "$f")"
-                cp "$f" "$GITHUB_WORKSPACE/built-ipks/"
+                cp "$f" built-ipks/ 2>/dev/null || true
               done
 
           echo "--- 收集到的 IPK ---"
-          ls -lh "$GITHUB_WORKSPACE/built-ipks/"
+          ls -lh built-ipks/ || echo "❌ 没有找到 IPK 文件"
 
       - name: Bundle into single IPK
         run: |
+          if [ -z "$(ls built-ipks/*.ipk 2>/dev/null)" ]; then
+            echo "❌ built-ipks 目录为空，无法打包"
+            exit 1
+          fi
+
           chmod +x custom-packages/build-bundle.sh
           custom-packages/build-bundle.sh \
             "${{ steps.ver.outputs.version }}" \
-            "$TARGET_ARCH" \
-            "$GITHUB_WORKSPACE/built-ipks" \
+            "aarch64_cortex-a53" \
+            "built-ipks" \
             "$GITHUB_WORKSPACE"
 
       - name: Upload artifact
