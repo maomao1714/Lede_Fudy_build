@@ -149,11 +149,15 @@ jobs:
           CONFIG_TESTING_KERNEL=y
           CONFIG_LINUX_6_6=y
           EOF
-              echo "✅ Filogic ARM 平台：已启用 Linux 6.6"
+              echo "✅ Filogic ARM：已启用 Linux 6.6"
               ;;
             re-sp-01b)
-              # MT7621 MIPS：最高支持 5.x 内核，不能强制 6.6
-              echo "⏭️ MT7621 MIPS 平台：跳过 Linux 6.6，使用默认内核"
+              # MT7621 MIPS 只支持 5.x，且测试内核有模块缺失问题
+              # 强制使用稳定内核
+              sed -i '/CONFIG_TESTING_KERNEL/d' openwrt/.config
+              sed -i '/CONFIG_LINUX_6_6/d'      openwrt/.config
+              echo "# CONFIG_TESTING_KERNEL is not set" >> openwrt/.config
+              echo "⏭️ MT7621 MIPS：使用稳定内核（已移除 TESTING_KERNEL）"
               ;;
           esac
 
@@ -170,7 +174,7 @@ jobs:
           echo "── TARGET 配置 ──"
           grep "CONFIG_TARGET_" .config | head -10
           echo "── 内核版本 ──"
-          grep "LINUX_6_6\|LINUX_5_" .config | head -5 || true
+          grep -E "LINUX_6_6|LINUX_5_|TESTING_KERNEL" .config | head -5 || true
 
       - name: ⬇️ 下载编译依赖
         run: |
@@ -185,7 +189,6 @@ jobs:
           make -j$(nproc) V=s 2>&1 | tee /tmp/build.log | \
             grep -E "^make\[|ERROR:|error:" || true
 
-          # 若并行失败，降级单线程重试获取完整错误
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "⚠️ 并行编译失败，单线程重试..."
             make -j1 V=s 2>&1 | tail -100
@@ -198,10 +201,12 @@ jobs:
 
           find openwrt/bin/targets/ -type f \
             \( -name "*.bin" -o -name "*.img.gz" \
-               -o -name "*.itb" -o -name "*.tar" \) \
+               -o -name "*.itb"  -o -name "*.tar" \) \
             -exec cp {} upload/ \;
 
           cd upload
+
+          # 重命名统一品牌标识
           for f in *; do
             newname=$(echo "$f" | sed 's/openwrt/DONGZAI/g; s/lede/DONGZAI/g')
             [ "$f" != "$newname" ] && mv "$f" "$newname"
@@ -210,7 +215,15 @@ jobs:
           echo "── 固件列表 ──"
           ls -lh
 
-          [ -z "$(ls -A .)" ] && echo "⚠️ 警告：未找到固件文件" && exit 1
+          # 关键修复：用 if 判断而非 [ ] && exit
+          # 原来写法 [ -z ... ] && exit 1 在 bash -e 模式下
+          # 条件为假时返回码 1 会被误判为错误导致步骤中断
+          if [ -z "$(ls -A .)" ]; then
+            echo "⚠️ 警告：未找到固件文件，编译可能失败"
+            exit 1
+          fi
+
+          echo "✅ 固件整理完成，共 $(ls | wc -l) 个文件"
 
       - name: 📤 上传 Artifact
         uses: actions/upload-artifact@v4
@@ -243,7 +256,7 @@ jobs:
             | 项目 | 内容 |
             |---|---|
             | 📦 设备 | `${{ github.event.inputs.device }}` |
-            | 🐧 内核 | Linux 6.6（Filogic）/ 5.x（MT7621） |
+            | 🐧 内核 | Linux 6.6（Filogic）/ 稳定 5.x（MT7621） |
             | 📅 编译日期 | ${{ steps.tag.outputs.release_date }} |
             | 🔖 标识 | DONGZAI |
 
