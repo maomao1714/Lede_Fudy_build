@@ -117,7 +117,7 @@ jobs:
             re-sp-01b) cp re-sp-01b.config openwrt/.config ;;
           esac
 
-          # 强制修正设备 TARGET：删除所有旧 DEVICE 行，只写当前设备
+          # 强制修正设备 TARGET
           case "$DEVICE" in
             wh3000)
               TARGET_LINE="CONFIG_TARGET_mediatek_filogic_DEVICE_huasifei_wh3000=y"
@@ -144,7 +144,6 @@ jobs:
 
           case "$DEVICE" in
             wh3000|wh3000pro)
-              # ARM Filogic（MT7981）支持 Linux 6.6
               cat >> openwrt/.config << 'EOF'
           CONFIG_TESTING_KERNEL=y
           CONFIG_LINUX_6_6=y
@@ -152,12 +151,11 @@ jobs:
               echo "✅ Filogic ARM：已启用 Linux 6.6"
               ;;
             re-sp-01b)
-              # MT7621 MIPS 只支持 5.x，且测试内核有模块缺失问题
-              # 强制使用稳定内核
+              # MT7621 MIPS：移除测试内核标记，避免 crypto 模块缺失
               sed -i '/CONFIG_TESTING_KERNEL/d' openwrt/.config
               sed -i '/CONFIG_LINUX_6_6/d'      openwrt/.config
               echo "# CONFIG_TESTING_KERNEL is not set" >> openwrt/.config
-              echo "⏭️ MT7621 MIPS：使用稳定内核（已移除 TESTING_KERNEL）"
+              echo "⏭️ MT7621 MIPS：使用稳定内核"
               ;;
           esac
 
@@ -165,6 +163,8 @@ jobs:
         run: |
           chmod +x diy-part2.sh
           cd openwrt
+          # 把设备名注入环境变量，让 diy-part2.sh 按设备分支执行
+          export DEVICE="${{ github.event.inputs.device }}"
           ../diy-part2.sh
 
       - name: 📋 生成最终配置
@@ -174,7 +174,7 @@ jobs:
           echo "── TARGET 配置 ──"
           grep "CONFIG_TARGET_" .config | head -10
           echo "── 内核版本 ──"
-          grep -E "LINUX_6_6|LINUX_5_|TESTING_KERNEL" .config | head -5 || true
+          grep -E "LINUX_6_6|TESTING_KERNEL" .config | head -5 || true
 
       - name: ⬇️ 下载编译依赖
         run: |
@@ -206,7 +206,6 @@ jobs:
 
           cd upload
 
-          # 重命名统一品牌标识
           for f in *; do
             newname=$(echo "$f" | sed 's/openwrt/DONGZAI/g; s/lede/DONGZAI/g')
             [ "$f" != "$newname" ] && mv "$f" "$newname"
@@ -215,11 +214,9 @@ jobs:
           echo "── 固件列表 ──"
           ls -lh
 
-          # 关键修复：用 if 判断而非 [ ] && exit
-          # 原来写法 [ -z ... ] && exit 1 在 bash -e 模式下
-          # 条件为假时返回码 1 会被误判为错误导致步骤中断
+          # 用 if 判断避免 bash -e 误退出
           if [ -z "$(ls -A .)" ]; then
-            echo "⚠️ 警告：未找到固件文件，编译可能失败"
+            echo "⚠️ 警告：未找到固件文件"
             exit 1
           fi
 
