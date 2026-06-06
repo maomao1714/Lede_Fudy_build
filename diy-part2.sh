@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # 设备名由工作流通过环境变量注入
-# 默认值 wh3000pro 防止本地直接运行时出错
 DEVICE="${DEVICE:-wh3000pro}"
 
 echo "========================================"
@@ -17,11 +16,12 @@ mkdir -p files/etc/init.d
 #  通用设置（所有设备共享）
 # ════════════════════════════════════════════
 
-# ── 1. 主机名（按设备命名）──────────────────
+# ── 1. 主机名（以型号命名）─────────────────
 case "$DEVICE" in
-  wh3000|wh3000pro) HOSTNAME="Fudy_pro" ;;
-  re-sp-01b)        HOSTNAME="Fudy_RE"  ;;
-  *)                HOSTNAME="DONGZAI"  ;;
+  wh3000)    HOSTNAME="WH3000"     ;;
+  wh3000pro) HOSTNAME="WH3000-Pro" ;;
+  re-sp-01b) HOSTNAME="RE-SP-01B"  ;;
+  *)         HOSTNAME="DONGZAI"    ;;
 esac
 
 cat > files/etc/uci-defaults/01-system << EOF
@@ -179,8 +179,7 @@ case "$DEVICE" in
   wh3000|wh3000pro)
     echo ">>> 应用 WH3000/WH3000 Pro 专属配置..."
 
-    # 4. WiFi 预配置
-    # path 是 MT7981 Filogic 专用路径，其他平台勿用
+    # 4. WiFi 预配置（MT7981 Filogic 专用路径）
     cat > files/etc/config/wireless << 'EOF'
 config wifi-device 'radio0'
 	option type 'mac80211'
@@ -231,7 +230,7 @@ EOF
     chmod +x files/etc/uci-defaults/99-wifi-fast
     echo ">>> [5] WiFi 首启优化完成"
 
-    # 6. Docker 数据目录（WH3000 Pro eMMC 分区专用）
+    # 6. Docker 数据目录（WH3000 Pro eMMC 专用）
     cat > files/etc/config/fstab << 'EOF'
 config global
 	option anon_mount '1'
@@ -258,61 +257,111 @@ EOF
     chmod +x files/etc/uci-defaults/30-docker
     echo ">>> [6] Docker 数据目录配置完成"
 
-    # Banner
+    # 10. Banner（DONGZAI 统一标识）
     cat > files/etc/banner << 'EOF'
 
- __        ___   _  _____  ___   ___   ___
- \ \      / / | | ||___ / / _ \ / _ \ / _ \
-  \ \ /\ / /| |_| |  |_ \| | | | | | | | | |
-   \ V  V / |  _  | ___) | |_| | |_| | |_| |
-    \_/\_/  |_| |_||____/ \___/ \___/ \___/
+ ____   ___  _   _  ____ _____    _    ___ 
+|  _ \ / _ \| \ | |/ ___|__  /  / \  |_ _|
+| | | | | | |  \| | |  _ / /  / _ \  | | 
+| |_| | |_| | |\  | |_| |/ /__/ ___ \ | | 
+|____/ \___/|_| \_|\____/____/_/   \_\___|
 
-      WH3000 Pro · DONGZAI Optimized Build
+    DONGZAI 固件工厂 · Huasifei WH3000 Pro
+    Platform: MediaTek MT7981 · ARM · 512MB
 
 EOF
 
     echo "========================================"
     echo " WH3000 Pro 专属配置完成"
+    echo " 主机名     : WH3000-Pro"
     echo " WiFi 2.4G  : Camera_mao"
     echo " WiFi 5G    : 栋仔_5G"
     echo " Docker     : /mnt/mmcblk0p7/docker"
-    echo " MSD 双后端 : msd_lite + rtp2httpd"
     echo "========================================"
     ;;
 
   # ──────────────────────────────────────────
-  #  RE-SP-01B（MT7621 MIPS · MT7603E + MT7615E）
+  #  RE-SP-01B（MT7621 MIPS · 512MB RAM）
+  #  WiFi: MT7603E(2.4G, PCIe0) + 5G(PCIe1)
+  #  启动日志确认 PCIe 路径:
+  #    2.4G: pci0000:01/0000:01:00.0 [14c3:7603]
+  #    5G:   pci0000:02/0000:02:00.0 (PCIe1)
   # ──────────────────────────────────────────
   re-sp-01b)
     echo ">>> 应用 RE-SP-01B 专属配置..."
 
-    # WiFi：不预写配置，避免 Generic unknown 问题
-    # MT7621 的 radio 路径与 MT7981 完全不同
-    # 由 device profile 的默认配置处理，首次启动自动生成正确设置
-    echo ">>> [4] RE-SP-01B WiFi：使用 device profile 默认配置（不预写）"
+    # 4. WiFi 预配置（MT7621 PCI 路径，解决首次启动 WiFi 不可用问题）
+    # 根因：mac80211 首次启动生成 disabled=1 的配置，需断电重启
+    # 修法：预写正确的 PCI 路径配置，强制 disabled=0
+    cat > files/etc/config/wireless << 'EOF'
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'pci0000:01/0000:01:00.0'
+	option band '2g'
+	option channel 'auto'
+	option htmode 'HT40'
+	option country 'CN'
+	option disabled '0'
 
-    # Docker：RE-SP-01B 未安装 Docker，跳过
-    echo ">>> [6] RE-SP-01B：跳过 Docker 配置（未安装）"
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'RE-SP-01B'
+	option encryption 'none'
 
-    # Banner
+config wifi-device 'radio1'
+	option type 'mac80211'
+	option path 'pci0000:02/0000:02:00.0'
+	option band '5g'
+	option channel '36'
+	option htmode 'VHT80'
+	option country 'CN'
+	option disabled '0'
+
+config wifi-iface 'default_radio1'
+	option device 'radio1'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'RE-SP-01B_5G'
+	option encryption 'none'
+EOF
+    echo ">>> [4] RE-SP-01B WiFi 预配置完成（PCI 路径已写入）"
+
+    # 5. WiFi 首启确保脚本（双重保险）
+    cat > files/etc/uci-defaults/99-wifi-enable << 'EOF'
+#!/bin/sh
+# RE-SP-01B WiFi 首启激活脚本
+# 确保两个 radio 都处于启用状态
+uci -q set wireless.radio0.disabled='0'
+uci -q set wireless.radio1.disabled='0'
+uci commit wireless
+wifi reload >/dev/null 2>&1
+exit 0
+EOF
+    chmod +x files/etc/uci-defaults/99-wifi-enable
+    echo ">>> [5] WiFi 首启激活脚本完成"
+
+    # 10. Banner（DONGZAI 统一标识）
     cat > files/etc/banner << 'EOF'
 
- __        ___   _  _____  ___   ___   ___
- \ \      / / | | ||___ / / _ \ / _ \ / _ \
-  \ \ /\ / /| |_| |  |_ \| | | | | | | | | |
-   \ V  V / |  _  | ___) | |_| | |_| | |_| |
-    \_/\_/  |_| |_||____/ \___/ \___/ \___/
+ ____   ___  _   _  ____ _____    _    ___ 
+|  _ \ / _ \| \ | |/ ___|__  /  / \  |_ _|
+| | | | | | |  \| | |  _ / /  / _ \  | | 
+| |_| | |_| | |\  | |_| |/ /__/ ___ \ | | 
+|____/ \___/|_| \_|\____/____/_/   \_\___|
 
-   RE-SP-01B · MT7621 · DONGZAI Optimized Build
+    DONGZAI 固件工厂 · JDCloud RE-SP-01B
+    Platform: MediaTek MT7621 · MIPS · 512MB
 
 EOF
 
     echo "========================================"
     echo " RE-SP-01B 专属配置完成"
-    echo " 平台      : MT7621 MIPS"
-    echo " WiFi 2.4G : MT7603E（device profile 默认）"
-    echo " WiFi 5G   : MT7615E（device profile 默认）"
-    echo " MSD 双后端: msd_lite + rtp2httpd"
+    echo " 主机名     : RE-SP-01B"
+    echo " WiFi 2.4G  : RE-SP-01B    (无密码，请刷机后在 LuCI 设置)"
+    echo " WiFi 5G    : RE-SP-01B_5G (无密码，请刷机后在 LuCI 设置)"
+    echo " 注意       : 无 Docker，无 eMMC 挂载脚本"
     echo "========================================"
     ;;
 
