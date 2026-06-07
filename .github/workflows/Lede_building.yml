@@ -201,18 +201,26 @@ jobs:
           cd openwrt
           make download -j8
           find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
-
+      
       - name: 🔨 编译固件
         run: |
           cd openwrt
-          echo "── 开始编译，CPU 核心：$(nproc) ──"
-          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log | \
-            grep -E "^make\[|ERROR:|error:" || true
 
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          echo "── 开始编译，CPU 核心：$(nproc) ──"
+
+          make -j$(nproc) V=s
+
+          RET=$?
+
+          if [ $RET -ne 0 ]; then
             echo "⚠️ 并行编译失败，单线程重试..."
-            make -j1 V=s 2>&1 | tail -100
+
+            make -j1 V=s
+
+            RET=$?
           fi
+
+          exit $RET
 
       - name: 📁 整理固件
         id: organize
