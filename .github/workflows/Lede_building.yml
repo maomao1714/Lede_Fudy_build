@@ -105,7 +105,27 @@ jobs:
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          
+      - name: 🔧 RE-SP-01B Docker兼容修复
+        if: github.event.inputs.device == 're-sp-01b'
+        run: |
+          cd openwrt
 
+          echo "===== 修复 MT7621 Docker ====="
+
+          rm -rf feeds/packages/utils/runc
+
+          git clone \
+            --depth=1 \
+            -b openwrt-23.05 \
+            https://github.com/openwrt/packages.git \
+            /tmp/packages-fix
+
+          cp -rf \
+            /tmp/packages-fix/utils/runc \
+            feeds/packages/utils/
+
+          echo "===== runc 已替换为 OpenWrt 23.05 兼容版 ====="
       - name: 🎛️ 加载设备配置
         run: |
           DEVICE="${{ github.event.inputs.device }}"
