@@ -339,35 +339,7 @@ EOF
     chmod +x files/etc/rc.local
     echo ">>> [5] WiFi 首启修复完成（rc.local 延迟启动）"
 
-    # 6. Docker 数据目录（RE-SP-01B eMMC）
-    # RE-SP-01B 128GB eMMC 挂载为 /dev/mmcblk0p1
-    # 注意：如实际分区号不同，刷机后在 LuCI → 系统 → 挂载点 中调整
-    cat > files/etc/config/fstab << 'EOF'
-config global
-	option anon_mount '1'
-	option auto_mount '1'
-	option auto_swap '1'
-
-config mount
-	option target '/mnt/mmcblk0p1'
-	option device '/dev/mmcblk0p1'
-	option fstype 'ext4'
-	option options 'rw,sync,noatime'
-	option enabled '1'
-EOF
-
-    cat > files/etc/uci-defaults/30-docker << 'EOF'
-#!/bin/sh
-mkdir -p /mnt/mmcblk0p1/docker
-uci set dockerd.globals.data_root='/mnt/mmcblk0p1/docker'
-uci commit dockerd
-/etc/init.d/dockerd enable
-/etc/init.d/dockerd restart
-exit 0
-EOF
-    chmod +x files/etc/uci-defaults/30-docker
-    echo ">>> [6] Docker 数据目录配置完成（/mnt/mmcblk0p1）"
-
+    
     # Banner
     cat > files/etc/banner << 'EOF'
 
