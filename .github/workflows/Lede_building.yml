@@ -105,27 +105,7 @@ jobs:
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          
-      - name: 🔧 RE-SP-01B Docker兼容修复
-        if: github.event.inputs.device == 're-sp-01b'
-        run: |
-          cd openwrt
 
-          echo "===== 修复 MT7621 Docker ====="
-
-          rm -rf feeds/packages/utils/runc
-
-          git clone \
-            --depth=1 \
-            -b openwrt-23.05 \
-            https://github.com/openwrt/packages.git \
-            /tmp/packages-fix
-
-          cp -rf \
-            /tmp/packages-fix/utils/runc \
-            feeds/packages/utils/
-
-          echo "===== runc 已替换为 OpenWrt 23.05 兼容版 ====="
       - name: 🎛️ 加载设备配置
         run: |
           DEVICE="${{ github.event.inputs.device }}"
@@ -201,26 +181,18 @@ jobs:
           cd openwrt
           make download -j8
           find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
-      
+
       - name: 🔨 编译固件
         run: |
           cd openwrt
-
           echo "── 开始编译，CPU 核心：$(nproc) ──"
+          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log | \
+            grep -E "^make\[|ERROR:|error:" || true
 
-          make -j$(nproc) V=s
-
-          RET=$?
-
-          if [ $RET -ne 0 ]; then
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
             echo "⚠️ 并行编译失败，单线程重试..."
-
-            make -j1 V=s
-
-            RET=$?
+            make -j1 V=s 2>&1 | tail -100
           fi
-
-          exit $RET
 
       - name: 📁 整理固件
         id: organize
