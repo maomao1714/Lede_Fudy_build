@@ -11,7 +11,7 @@ on:
         options:
           - wh3000        # 华硅 WH3000       · MT7981 ARM · 512MB
           - wh3000pro     # 华硅 WH3000 Pro   · MT7981 ARM · 512MB
-          - re-sp-01b     # 京东云无线宝       · MT7621 MIPS · 256MB
+          - re-sp-01b     # 京东云无线宝       · MT7621 MIPS · 512MB
 
 env:
   LEDE_REPO:   https://github.com/coolsnowwolf/lede
@@ -50,7 +50,7 @@ jobs:
               ;;
             re-sp-01b)
               DNAME="京东云无线宝 RE-SP-01B"
-              DSPEC="MT7621 MIPS · 256MB RAM · 128GB eMMC"
+              DSPEC="MT7621 MIPS · 512MB RAM · 128GB eMMC"
               ;;
           esac
 
@@ -117,26 +117,24 @@ jobs:
             re-sp-01b) cp re-sp-01b.config openwrt/.config ;;
           esac
 
-          # 强制修正设备 TARGET
-          case "$DEVICE" in
-            wh3000)
-              TARGET_LINE="CONFIG_TARGET_mediatek_filogic_DEVICE_huasifei_wh3000=y"
-              ;;
-            wh3000pro)
-              TARGET_LINE="CONFIG_TARGET_mediatek_filogic_DEVICE_huasifei_wh3000-pro=y"
-              ;;
-            re-sp-01b)
-              TARGET_LINE="CONFIG_TARGET_ramips_mt7621_DEVICE_jdcloud_re-sp-01b=y"
-              ;;
-          esac
-
-          grep -v "CONFIG_TARGET_.*_DEVICE_" openwrt/.config \
-            > /tmp/.config_patched
-          echo "$TARGET_LINE" >> /tmp/.config_patched
-          cp /tmp/.config_patched openwrt/.config
+          # ── 设备 TARGET 修正 ─────────────────────────────────
+          # WH3000 / WH3000 Pro：config 文件已有正确设备行，直接使用
+          #   之前编译正常，TARGET 修正反而会引入错误，故跳过
+          # RE-SP-01B：config 由其他设备 config 修改而来，需强制修正
+          #   否则 make defconfig 会默认选中 abt_asr3000
+          if [ "$DEVICE" = "re-sp-01b" ]; then
+            grep -v "CONFIG_TARGET_.*_DEVICE_" openwrt/.config \
+              > /tmp/.config_patched
+            echo "CONFIG_TARGET_ramips_mt7621_DEVICE_jdcloud_re-sp-01b=y" \
+              >> /tmp/.config_patched
+            cp /tmp/.config_patched openwrt/.config
+            echo "✅ RE-SP-01B 设备目标已修正"
+          else
+            echo "✅ ${DEVICE}：直接使用 config 文件中的设备配置"
+          fi
 
           echo "── 当前设备目标 ──"
-          grep "DEVICE_" openwrt/.config
+          grep "DEVICE_" openwrt/.config | grep -v "^#" || true
 
       - name: 🐧 强制启用 Linux 6.6 内核（仅限 ARM Filogic 平台）
         run: |
@@ -144,17 +142,18 @@ jobs:
 
           case "$DEVICE" in
             wh3000|wh3000pro)
-              cat >> openwrt/.config << 'EOF'
-          CONFIG_TESTING_KERNEL=y
-          CONFIG_LINUX_6_6=y
-          EOF
+              # ARM Filogic（MT7981）支持 Linux 6.6
+              printf 'CONFIG_TESTING_KERNEL=y\nCONFIG_LINUX_6_6=y\n' \
+                >> openwrt/.config
               echo "✅ Filogic ARM：已启用 Linux 6.6"
               ;;
             re-sp-01b)
-              # MT7621 MIPS：移除测试内核标记，避免 crypto 模块缺失
+              # MT7621 MIPS：最高支持 5.x，移除测试内核标记
+              # 避免 crypto/geniv.ko 缺失导致编译失败
               sed -i '/CONFIG_TESTING_KERNEL/d' openwrt/.config
               sed -i '/CONFIG_LINUX_6_6/d'      openwrt/.config
-              echo "# CONFIG_TESTING_KERNEL is not set" >> openwrt/.config
+              printf '# CONFIG_TESTING_KERNEL is not set\n' \
+                >> openwrt/.config
               echo "⏭️ MT7621 MIPS：使用稳定内核"
               ;;
           esac
@@ -163,7 +162,7 @@ jobs:
         run: |
           chmod +x diy-part2.sh
           cd openwrt
-          # 把设备名注入环境变量，让 diy-part2.sh 按设备分支执行
+          # 把设备名通过环境变量注入脚本，按设备分支执行定制
           export DEVICE="${{ github.event.inputs.device }}"
           ../diy-part2.sh
 
@@ -186,13 +185,18 @@ jobs:
         run: |
           cd openwrt
           echo "── 开始编译，CPU 核心：$(nproc) ──"
+
           make -j$(nproc) V=s 2>&1 | tee /tmp/build.log | \
             grep -E "^make\[|ERROR:|error:" || true
 
+          # 检查编译结果
           if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "⚠️ 并行编译失败，单线程重试..."
-            make -j1 V=s 2>&1 | tail -100
+            echo "⚠️ 并行编译失败，单线程重试以获取完整错误信息..."
+            make -j1 V=s 2>&1 | tail -150
+            exit 1
           fi
+
+          echo "✅ 编译完成"
 
       - name: 📁 整理固件
         id: organize
@@ -206,17 +210,19 @@ jobs:
 
           cd upload
 
+          # 统一重命名：openwrt/lede → DONGZAI
           for f in *; do
-            newname=$(echo "$f" | sed 's/openwrt/DONGZAI/g; s/lede/DONGZAI/g')
+            newname=$(echo "$f" | \
+              sed 's/openwrt/DONGZAI/g; s/lede/DONGZAI/g')
             [ "$f" != "$newname" ] && mv "$f" "$newname"
           done
 
           echo "── 固件列表 ──"
           ls -lh
 
-          # 用 if 判断避免 bash -e 误退出
+          # 用 if 语句判断，避免 bash -e 模式下空目录误退出
           if [ -z "$(ls -A .)" ]; then
-            echo "⚠️ 警告：未找到固件文件"
+            echo "⚠️ 警告：未找到固件文件，编译可能存在问题"
             exit 1
           fi
 
@@ -253,9 +259,15 @@ jobs:
             | 项目 | 内容 |
             |---|---|
             | 📦 设备 | `${{ github.event.inputs.device }}` |
-            | 🐧 内核 | Linux 6.6（Filogic）/ 稳定 5.x（MT7621） |
+            | 🐧 内核 | Linux 6.6（Filogic ARM）/ 稳定 5.x（MT7621 MIPS） |
             | 📅 编译日期 | ${{ steps.tag.outputs.release_date }} |
             | 🔖 标识 | DONGZAI |
+
+            ### 固件说明
+            | 文件 | 用途 |
+            |---|---|
+            | `*-initramfs-kernel.bin` | 首次刷机 / TFTP 恢复 |
+            | `*-squashfs-sysupgrade.bin` | ✅ 日常升级固件（推荐） |
 
             ### 刷机注意
             - 首次刷入请先备份原厂固件
