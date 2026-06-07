@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 设备名由工作流通过环境变量注入
 DEVICE="${DEVICE:-wh3000pro}"
 
 echo "========================================"
@@ -230,7 +229,7 @@ EOF
     chmod +x files/etc/uci-defaults/99-wifi-fast
     echo ">>> [5] WiFi 首启优化完成"
 
-    # 6. Docker 数据目录（WH3000 Pro eMMC 专用）
+    # 6. Docker 数据目录（WH3000 Pro eMMC 专用分区）
     cat > files/etc/config/fstab << 'EOF'
 config global
 	option anon_mount '1'
@@ -255,9 +254,9 @@ uci commit dockerd
 exit 0
 EOF
     chmod +x files/etc/uci-defaults/30-docker
-    echo ">>> [6] Docker 数据目录配置完成"
+    echo ">>> [6] Docker 数据目录配置完成（/mnt/mmcblk0p7）"
 
-    # 10. Banner（DONGZAI 统一标识）
+    # Banner
     cat > files/etc/banner << 'EOF'
 
  ____   ___  _   _  ____ _____    _    ___ 
@@ -272,27 +271,25 @@ EOF
 EOF
 
     echo "========================================"
-    echo " WH3000 Pro 专属配置完成"
-    echo " 主机名     : WH3000-Pro"
-    echo " WiFi 2.4G  : Camera_mao"
-    echo " WiFi 5G    : 栋仔_5G"
-    echo " Docker     : /mnt/mmcblk0p7/docker"
+    echo " WH3000 Pro 配置完成"
+    echo " 主机名    : WH3000-Pro"
+    echo " WiFi 2.4G : Camera_mao"
+    echo " WiFi 5G   : 栋仔_5G"
+    echo " Docker    : /mnt/mmcblk0p7/docker"
     echo "========================================"
     ;;
 
   # ──────────────────────────────────────────
   #  RE-SP-01B（MT7621 MIPS · 512MB RAM）
-  #  WiFi: MT7603E(2.4G, PCIe0) + 5G(PCIe1)
-  #  启动日志确认 PCIe 路径:
+  #  WiFi: MT7603E(PCIe0) + 5G(PCIe1)
+  #  启动日志确认路径：
   #    2.4G: pci0000:01/0000:01:00.0 [14c3:7603]
-  #    5G:   pci0000:02/0000:02:00.0 (PCIe1)
+  #    5G:   pci0000:02/0000:02:00.0
   # ──────────────────────────────────────────
   re-sp-01b)
     echo ">>> 应用 RE-SP-01B 专属配置..."
 
-    # 4. WiFi 预配置（MT7621 PCI 路径，解决首次启动 WiFi 不可用问题）
-    # 根因：mac80211 首次启动生成 disabled=1 的配置，需断电重启
-    # 修法：预写正确的 PCI 路径配置，强制 disabled=0
+    # 4. WiFi 预配置（MT7621 PCI 路径）
     cat > files/etc/config/wireless << 'EOF'
 config wifi-device 'radio0'
 	option type 'mac80211'
@@ -326,23 +323,52 @@ config wifi-iface 'default_radio1'
 	option ssid 'RE-SP-01B_5G'
 	option encryption 'none'
 EOF
-    echo ">>> [4] RE-SP-01B WiFi 预配置完成（PCI 路径已写入）"
+    echo ">>> [4] RE-SP-01B WiFi 预配置完成"
 
-    # 5. WiFi 首启确保脚本（双重保险）
-    cat > files/etc/uci-defaults/99-wifi-enable << 'EOF'
+    # 5. WiFi 首启修复
+    # 根因：MT7621 上 uci-defaults 运行时 WiFi 驱动尚未完全初始化
+    # 修法：通过 rc.local 在所有服务就绪后延迟执行 wifi up
+    # （移除 uci-defaults 方式，改用 rc.local 更可靠）
+    cat > files/etc/rc.local << 'EOF'
 #!/bin/sh
-# RE-SP-01B WiFi 首启激活脚本
-# 确保两个 radio 都处于启用状态
-uci -q set wireless.radio0.disabled='0'
-uci -q set wireless.radio1.disabled='0'
-uci commit wireless
-wifi reload >/dev/null 2>&1
+# RE-SP-01B WiFi 首启修复
+# MT7621 首次启动时驱动初始化较慢，延迟 8 秒确保 wifi up 时驱动已就绪
+sleep 8 && wifi up >/dev/null 2>&1
 exit 0
 EOF
-    chmod +x files/etc/uci-defaults/99-wifi-enable
-    echo ">>> [5] WiFi 首启激活脚本完成"
+    chmod +x files/etc/rc.local
+    echo ">>> [5] WiFi 首启修复完成（rc.local 延迟启动）"
 
-    # 10. Banner（DONGZAI 统一标识）
+    # 6. Docker 数据目录（RE-SP-01B eMMC）
+    # RE-SP-01B 128GB eMMC 挂载为 /dev/mmcblk0p1
+    # 注意：如实际分区号不同，刷机后在 LuCI → 系统 → 挂载点 中调整
+    cat > files/etc/config/fstab << 'EOF'
+config global
+	option anon_mount '1'
+	option auto_mount '1'
+	option auto_swap '1'
+
+config mount
+	option target '/mnt/mmcblk0p1'
+	option device '/dev/mmcblk0p1'
+	option fstype 'ext4'
+	option options 'rw,sync,noatime'
+	option enabled '1'
+EOF
+
+    cat > files/etc/uci-defaults/30-docker << 'EOF'
+#!/bin/sh
+mkdir -p /mnt/mmcblk0p1/docker
+uci set dockerd.globals.data_root='/mnt/mmcblk0p1/docker'
+uci commit dockerd
+/etc/init.d/dockerd enable
+/etc/init.d/dockerd restart
+exit 0
+EOF
+    chmod +x files/etc/uci-defaults/30-docker
+    echo ">>> [6] Docker 数据目录配置完成（/mnt/mmcblk0p1）"
+
+    # Banner
     cat > files/etc/banner << 'EOF'
 
  ____   ___  _   _  ____ _____    _    ___ 
@@ -357,11 +383,12 @@ EOF
 EOF
 
     echo "========================================"
-    echo " RE-SP-01B 专属配置完成"
-    echo " 主机名     : RE-SP-01B"
-    echo " WiFi 2.4G  : RE-SP-01B    (无密码，请刷机后在 LuCI 设置)"
-    echo " WiFi 5G    : RE-SP-01B_5G (无密码，请刷机后在 LuCI 设置)"
-    echo " 注意       : 无 Docker，无 eMMC 挂载脚本"
+    echo " RE-SP-01B 配置完成"
+    echo " 主机名    : RE-SP-01B"
+    echo " WiFi 2.4G : RE-SP-01B    (开放，刷机后设密码)"
+    echo " WiFi 5G   : RE-SP-01B_5G (开放，刷机后设密码)"
+    echo " Docker    : /mnt/mmcblk0p1/docker"
+    echo " 注意      : eMMC 分区号如有误，在 LuCI 挂载点调整"
     echo "========================================"
     ;;
 
