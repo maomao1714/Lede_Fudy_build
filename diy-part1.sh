@@ -23,14 +23,45 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
     package/luci-app-iptv-manager
 
 # ════════════════════════════════════════════════════════════════
-#  修复 gpio-button-hotplug 上游兼容性问题
+#  修复 aquantia PHY backport patch 冲突
 #
-#  LEDE 上游更新该包，使用了以下新内核 API：
-#    1. devm_kmemdup_array              Linux ≥ 6.8   我们：5.10 / 6.6
-#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5  我们：5.10
-#    3. void .remove 回调              Linux ≥ 6.11  5.10/6.6 需返回 int
+#  根因：Linux 6.6.142 已将 aquantia PHY 驱动原生移入子目录
+#        (drivers/net/phy/aquantia/)，但 LEDE 的 backport patch 仍
+#        尝试重复创建这些文件，导致 toolchain/kernel-headers 编译失败
+#  修法：删除冲突的 backport patch 文件，内核中已有原生实现
+#  影响：仅 Linux 6.6 构建（WH3000/WH3000 Pro），5.x 构建不受影响
+# ════════════════════════════════════════════════════════════════
+BKPORT_DIR="target/linux/generic/backport-6.6"
+if [ -d "$BKPORT_DIR" ]; then
+    echo ">>> 检查 aquantia backport patch 冲突..."
+    REMOVED=0
+    for f in "$BKPORT_DIR"/70[0-9]-*aquantia*.patch; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo "  ✅ 已移除冲突 patch：$(basename "$f")"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+    if [ "$REMOVED" -eq 0 ]; then
+        echo "  ℹ️ 未发现 aquantia 冲突 patch，跳过"
+    else
+        echo "  ✅ aquantia patch 冲突已清除（共 $REMOVED 个）"
+    fi
+fi
+
+# ════════════════════════════════════════════════════════════════
+#  修复 gpio-button-hotplug 上游 API 兼容性
 #
-#  修法：编译前自动 patch 源文件，添加兼容层（均有 #ifndef 保护）
+#  LEDE 上游更新使用了以下新内核 API：
+#    1. devm_kmemdup_array              Linux ≥ 6.8
+#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5
+#    3. void .remove 回调               Linux ≥ 6.11
+#
+#  兼容策略（用 #ifndef 保护，符合要求的内核自动跳过 shim）：
+#    - API 2：Linux 6.6 原生有（6.5 引入），#ifndef 自动跳过 shim
+#    - API 1：Linux 6.6 没有（6.8 引入），shim 生效
+#    - API 3：Linux 6.6 没有（6.11 引入），直接修改函数签名
+#    - RE-SP-01B（Linux 5.10）：config 已禁用该包，不会编译，此 patch 对其无效
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
@@ -48,9 +79,12 @@ changed = False
 shims = []
 
 # ── Shim 1：devm_kmemdup_array（Linux >= 6.8）──────────────────
+# Linux 6.6 没有此函数（6.8 才有），shim 生效
+# Linux 6.8+ 有原生实现，#ifndef 自动跳过
 if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in content:
     shims.append(
-        '/* COMPAT: devm_kmemdup_array was added in Linux 6.8 */\n'
+        '/* COMPAT: devm_kmemdup_array (added in Linux 6.8)\n'
+        ' * Linux 6.8+: #ifndef skips this shim automatically */\n'
         '#ifndef devm_kmemdup_array\n'
         '#include <linux/string.h>\n'
         'static inline void *__compat_devm_kmemdup_array(\n'
@@ -66,16 +100,17 @@ if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in cont
         '#endif'
     )
     changed = True
-    print('  OK: devm_kmemdup_array 兼容层已添加')
+    print('  OK: devm_kmemdup_array shim 已添加（6.6 生效，6.8+ 自动跳过）')
 
 # ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
-# 该宏在 6.5 引入，支持 C 变量作用域自动清理
-# 5.10 没有此宏，用 C99 for 循环声明变量替代
+# Linux 6.6 原生有此宏（6.5 引入），#ifndef 自动跳过此 shim
+# 此 shim 仅为 < 6.5 内核准备（当前 6.6 构建不会执行）
 if ('for_each_available_child_of_node_scoped' in content and
         'compat_node_scoped' not in content):
     shims.append(
-        '/* COMPAT: for_each_available_child_of_node_scoped (Linux >= 6.5) */\n'
-        '/* Fallback using C99 for-loop variable declaration */\n'
+        '/* COMPAT: for_each_available_child_of_node_scoped (added in Linux 6.5)\n'
+        ' * Linux 6.5+: #ifndef skips this shim automatically\n'
+        ' * Linux 6.6 has this natively - this shim is inactive */\n'
         '#ifndef for_each_available_child_of_node_scoped\n'
         '#define for_each_available_child_of_node_scoped(parent, child) \\\n'
         '    for (struct device_node *(child) = \\\n'
@@ -85,9 +120,9 @@ if ('for_each_available_child_of_node_scoped' in content and
         '#endif'
     )
     changed = True
-    print('  OK: for_each_available_child_of_node_scoped 兼容层已添加')
+    print('  OK: for_each_available_child_of_node_scoped shim 已添加（6.6 原生有，自动跳过）')
 
-# ── 将所有 shim 统一插入到最后一个 #include 之后 ──────────────
+# ── 将 shim 插入到最后一个 #include 之后 ──────────────────────
 if shims:
     combined = '\n\n' + '\n\n'.join(shims) + '\n\n'
     includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
@@ -97,8 +132,10 @@ if shims:
     else:
         content = combined + content
 
-# ── Fix 3：void .remove → int .remove（Linux >= 6.11 改为 void）──
-# 5.10 / 6.6 的 platform_driver.remove 仍需返回 int
+# ── Fix 3：void .remove → int .remove ──────────────────────────
+# platform_driver.remove 在 Linux 6.11 改为 void
+# Linux 6.6 仍使用 int，直接修改函数签名
+# 使用 brace-depth 计数在函数末尾插入 return 0
 lines = content.split('\n')
 result = []
 in_remove = False
@@ -117,7 +154,6 @@ for line in lines:
     if in_remove:
         prev = depth
         depth += line.count('{') - line.count('}')
-        # 检测函数体最外层闭合花括号，在其前插入 return 0
         if prev > 0 and depth == 0 and '}' in line:
             result.append('\treturn 0;')
             in_remove = False
@@ -129,7 +165,7 @@ content = '\n'.join(result)
 if changed:
     with open(filepath, 'w') as f:
         f.write(content)
-    print('  OK: gpio-button-hotplug patch 完成')
+    print('  OK: gpio-button-hotplug 全部兼容 patch 完成')
 else:
     print('  INFO: 文件无需修复')
 PYEOF
