@@ -136,25 +136,24 @@ jobs:
           echo "── 当前设备目标 ──"
           grep "DEVICE_" openwrt/.config | grep -v "^#" || true
 
-      - name: 🐧 强制启用 Linux 6.6 内核（仅限 ARM Filogic 平台）
+      - name: 🐧 配置内核版本
         run: |
           DEVICE="${{ github.event.inputs.device }}"
 
           case "$DEVICE" in
             wh3000|wh3000pro)
-              # ARM Filogic（MT7981）支持 Linux 6.6
-              printf 'CONFIG_TESTING_KERNEL=y\nCONFIG_LINUX_6_6=y\n' \
-                >> openwrt/.config
-              echo "✅ Filogic ARM：已启用 Linux 6.6"
+              # ARM Filogic（MT7981）：启用测试内核
+              # 不锁定具体版本号，让 LEDE 自动选择当前最新测试内核
+              printf 'CONFIG_TESTING_KERNEL=y\n' >> openwrt/.config
+              echo "✅ Filogic ARM：已启用最新测试内核（LEDE 自动选择）"
               ;;
             re-sp-01b)
-              # MT7621 MIPS：最高支持 5.x，移除测试内核标记
-              # 避免 crypto/geniv.ko 缺失导致编译失败
+              # MT7621 MIPS：仅支持 5.x 稳定内核
+              # 测试内核存在 crypto 模块缺失问题，必须使用稳定版
               sed -i '/CONFIG_TESTING_KERNEL/d' openwrt/.config
               sed -i '/CONFIG_LINUX_6_6/d'      openwrt/.config
-              printf '# CONFIG_TESTING_KERNEL is not set\n' \
-                >> openwrt/.config
-              echo "⏭️ MT7621 MIPS：使用稳定内核"
+              printf '# CONFIG_TESTING_KERNEL is not set\n' >> openwrt/.config
+              echo "⏭️ MT7621 MIPS：使用稳定内核（5.x）"
               ;;
           esac
 
@@ -173,7 +172,7 @@ jobs:
           echo "── TARGET 配置 ──"
           grep "CONFIG_TARGET_" .config | head -10
           echo "── 内核版本 ──"
-          grep -E "LINUX_6_6|TESTING_KERNEL" .config | head -5 || true
+          grep -E "LINUX_6|LINUX_5|TESTING_KERNEL" .config | head -5 || true
 
       - name: ⬇️ 下载编译依赖
         run: |
@@ -259,11 +258,11 @@ jobs:
             | 项目 | 内容 |
             |---|---|
             | 📦 设备 | `${{ github.event.inputs.device }}` |
-            | 🐧 内核 | Linux 6.6（Filogic ARM）/ 稳定 5.x（MT7621 MIPS） |
+            | 🐧 内核 | 最新测试内核（Filogic ARM）/ 稳定 5.x（MT7621 MIPS） |
             | 📅 编译日期 | ${{ steps.tag.outputs.release_date }} |
             | 🔖 标识 | DONGZAI |
 
-            ### 固件说明
+            ### 固件文件说明
             | 文件 | 用途 |
             |---|---|
             | `*-initramfs-kernel.bin` | 首次刷机 / TFTP 恢复 |
