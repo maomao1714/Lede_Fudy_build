@@ -24,16 +24,18 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
 
 # ════════════════════════════════════════════════════════════════
 #  修复 gpio-button-hotplug 上游兼容性问题
-#  根因：LEDE 上游更新该包使用了 Linux 6.8 / 6.11 新 API：
-#    1. devm_kmemdup_array  → Linux >= 6.8，我们的内核：5.10 / 6.6
-#    2. void .remove 回调   → Linux >= 6.11，5.10 / 6.6 必须返回 int
-#  影响：所有设备（ARM Filogic + MIPS MT7621）全部编译失败
-#  修法：在编译前自动 patch 源文件，添加兼容层
+#
+#  LEDE 上游更新该包，使用了以下新内核 API：
+#    1. devm_kmemdup_array              Linux ≥ 6.8   我们：5.10 / 6.6
+#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5  我们：5.10
+#    3. void .remove 回调              Linux ≥ 6.11  5.10/6.6 需返回 int
+#
+#  修法：编译前自动 patch 源文件，添加兼容层（均有 #ifndef 保护）
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
 if [ -f "$GHBH_C" ]; then
-    echo ">>> 检测 gpio-button-hotplug 兼容性..."
+    echo ">>> 修复 gpio-button-hotplug 内核兼容性..."
 
     python3 << 'PYEOF'
 import re
@@ -43,14 +45,12 @@ with open(filepath, 'r') as f:
     content = f.read()
 
 changed = False
+shims = []
 
-# ── Fix 1: devm_kmemdup_array 兼容层 ──────────────────────────
-# 该函数 Linux >= 6.8 才有，在此之前用 devm_kmalloc_array + memcpy 替代
+# ── Shim 1：devm_kmemdup_array（Linux >= 6.8）──────────────────
 if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in content:
-    shim = (
-        '\n'
-        '/* COMPAT: devm_kmemdup_array was added in Linux 6.8\n'
-        ' * Provide fallback for kernels 5.x and 6.6 */\n'
+    shims.append(
+        '/* COMPAT: devm_kmemdup_array was added in Linux 6.8 */\n'
         '#ifndef devm_kmemdup_array\n'
         '#include <linux/string.h>\n'
         'static inline void *__compat_devm_kmemdup_array(\n'
@@ -58,34 +58,53 @@ if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in cont
         '    size_t n, size_t size, gfp_t gfp)\n'
         '{\n'
         '    void *p = devm_kmalloc_array(dev, n, size, gfp);\n'
-        '    if (p)\n'
-        '        memcpy(p, src, n * size);\n'
+        '    if (p) memcpy(p, src, n * size);\n'
         '    return p;\n'
         '}\n'
         '#define devm_kmemdup_array(dev, src, n, size, gfp) \\\n'
         '    __compat_devm_kmemdup_array(dev, src, n, size, gfp)\n'
-        '#endif\n\n'
+        '#endif'
     )
-    # 插入到最后一个 #include 之后
-    includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
-    if includes:
-        pos = includes[-1].end()
-        content = content[:pos] + '\n' + shim + content[pos:]
-    else:
-        content = shim + content
     changed = True
     print('  OK: devm_kmemdup_array 兼容层已添加')
 
-# ── Fix 2: void .remove → int .remove ─────────────────────────
-# Linux 6.11 将 platform_driver.remove 改为返回 void
-# 我们的内核 (5.10, 6.6) 仍要求返回 int
+# ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
+# 该宏在 6.5 引入，支持 C 变量作用域自动清理
+# 5.10 没有此宏，用 C99 for 循环声明变量替代
+if ('for_each_available_child_of_node_scoped' in content and
+        'compat_node_scoped' not in content):
+    shims.append(
+        '/* COMPAT: for_each_available_child_of_node_scoped (Linux >= 6.5) */\n'
+        '/* Fallback using C99 for-loop variable declaration */\n'
+        '#ifndef for_each_available_child_of_node_scoped\n'
+        '#define for_each_available_child_of_node_scoped(parent, child) \\\n'
+        '    for (struct device_node *(child) = \\\n'
+        '             of_get_next_available_child((parent), NULL); \\\n'
+        '         (child) != NULL; \\\n'
+        '         (child) = of_get_next_available_child((parent), (child)))\n'
+        '#endif'
+    )
+    changed = True
+    print('  OK: for_each_available_child_of_node_scoped 兼容层已添加')
+
+# ── 将所有 shim 统一插入到最后一个 #include 之后 ──────────────
+if shims:
+    combined = '\n\n' + '\n\n'.join(shims) + '\n\n'
+    includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
+    if includes:
+        pos = includes[-1].end()
+        content = content[:pos] + combined + content[pos:]
+    else:
+        content = combined + content
+
+# ── Fix 3：void .remove → int .remove（Linux >= 6.11 改为 void）──
+# 5.10 / 6.6 的 platform_driver.remove 仍需返回 int
 lines = content.split('\n')
 result = []
 in_remove = False
 depth = 0
 
 for line in lines:
-    # 匹配 static void xxx_remove 函数定义行
     if (not in_remove
             and 'static void ' in line
             and '_remove(' in line
@@ -98,7 +117,7 @@ for line in lines:
     if in_remove:
         prev = depth
         depth += line.count('{') - line.count('}')
-        # 检测函数体的最外层闭合花括号
+        # 检测函数体最外层闭合花括号，在其前插入 return 0
         if prev > 0 and depth == 0 and '}' in line:
             result.append('\treturn 0;')
             in_remove = False
@@ -110,9 +129,9 @@ content = '\n'.join(result)
 if changed:
     with open(filepath, 'w') as f:
         f.write(content)
-    print('  OK: gpio-button-hotplug patch 成功')
+    print('  OK: gpio-button-hotplug patch 完成')
 else:
-    print('  INFO: 文件无需修复（可能已是兼容版本）')
+    print('  INFO: 文件无需修复')
 PYEOF
 
 else
