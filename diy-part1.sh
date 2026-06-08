@@ -24,7 +24,13 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
 
 # ════════════════════════════════════════════════════════════════
 #  清理 backport-6.6 冲突 patches（700–799 段）
-#
+# 清理 hack-6.6 Aquantia 冲突补丁
+HACK_DIR="target/linux/generic/hack-6.6"
+
+if [ -d "$HACK_DIR" ]; then
+    rm -f "$HACK_DIR"/*aquantia*.patch 2>/dev/null || true
+    echo ">>> ✅ 已清理 hack-6.6 Aquantia patch"
+fi
 #  根因：LEDE 的 700–799 编号 patch 均为将 Linux 6.7/6.8 的 net/phy
 #        驱动改动回移至 6.6 分支的 backport。随着 6.6.x stable 持续
 #        更新（当前 6.6.142），这些改动已被原生合入内核，backport patch
