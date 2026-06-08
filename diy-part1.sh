@@ -23,36 +23,41 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
     package/luci-app-iptv-manager
 
 # ════════════════════════════════════════════════════════════════
-#  清理 backport-6.6 冲突 patches（700–799 段）
-# 清理 hack-6.6 Aquantia 冲突补丁
-HACK_DIR="target/linux/generic/hack-6.6"
-
-if [ -d "$HACK_DIR" ]; then
-    rm -f "$HACK_DIR"/*aquantia*.patch 2>/dev/null || true
-    echo ">>> ✅ 已清理 hack-6.6 Aquantia patch"
-fi
-#  根因：LEDE 的 700–799 编号 patch 均为将 Linux 6.7/6.8 的 net/phy
-#        驱动改动回移至 6.6 分支的 backport。随着 6.6.x stable 持续
-#        更新（当前 6.6.142），这些改动已被原生合入内核，backport patch
-#        会重复创建/修改文件，导致 toolchain/kernel-headers 编译失败。
+#  清理 backport-6.6 冲突 patches（按名称匹配）
 #
-#  已知冲突 patch（陆续出现，一次性全清）：
-#    702-01-v6.7-net-phy-aquantia-move-to-separate-directory.patch
-#    707-v6.8-02-net-phy-at803x-move-disable-WOL-to-specific-at8031-p.patch
-#    ...（同段其余 patch 可能随内核更新继续出现）
+#  之前按编号段（700-799）删 patch 不完整：
+#    702-01-*aquantia*-move*  (700段) → 创建 aquantia/ 子目录
+#    836-*aquantia*-PMD*      (800段) → 修改 aquantia/ 子目录里的文件
+#  删了 702 但留着 836，836 找不到目录就报错。
 #
-#  安全性：700–799 段均为 Aquantia / Atheros QCA / 其他 PHY 芯片改动
-#           WH3000/WH3000 Pro (MT7981 Filogic) 使用 MediaTek 内置 PHY，
-#           不依赖这些驱动，删除不影响设备功能。
+#  正确做法：按名称匹配，删除整条 aquantia / at803x 依赖链
+#  覆盖范围：700-999 全段，彻底清理
+#
+#  安全性：WH3000/WH3000 Pro 使用 MT7981 内置 PHY，
+#           不依赖 aquantia（AQtion/Marvell）和 at803x（Atheros QCA）
+#           删除这些 patch 不影响设备任何功能
 # ════════════════════════════════════════════════════════════════
 BKPORT_DIR="target/linux/generic/backport-6.6"
 if [ -d "$BKPORT_DIR" ]; then
-    COUNT=$(ls "$BKPORT_DIR"/7[0-9][0-9]-*.patch 2>/dev/null | wc -l)
-    if [ "$COUNT" -gt 0 ]; then
-        rm -f "$BKPORT_DIR"/7[0-9][0-9]-*.patch
-        echo ">>> ✅ 已清理 700–799 段 backport-6.6 冲突 patches（共 $COUNT 个）"
+    echo ">>> 清理冲突的 net/phy backport patches（按名称匹配）..."
+    REMOVED=0
+    # 删除所有 aquantia 相关 patch（包括 move patch + 所有依赖它的后续 patch）
+    # 删除所有 at803x 相关 patch（整条链一起删）
+    for f in \
+        "$BKPORT_DIR"/*aquantia*.patch \
+        "$BKPORT_DIR"/*at803x*.patch \
+        "$BKPORT_DIR"/*phy-at80*.patch; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo "  ✅ $(basename "$f")"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+
+    if [ "$REMOVED" -eq 0 ]; then
+        echo "  ℹ️ 未发现相关 patch，无需清理"
     else
-        echo ">>> ℹ️ 700–799 段 backport-6.6 无冲突 patch，跳过"
+        echo "  ✅ 共清理 $REMOVED 个冲突 patch"
     fi
 fi
 
@@ -61,10 +66,11 @@ fi
 #
 #  LEDE 上游更新使用了以下新内核 API：
 #    1. devm_kmemdup_array              Linux ≥ 6.8  （6.6 需要 shim）
-#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5（6.6 原生有，#ifndef 跳过）
+#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5（6.6 原生有）
 #    3. void .remove 回调               Linux ≥ 6.11 （6.6 需要修改签名）
 #
-#  RE-SP-01B（Linux 5.10）已在 re-sp-01b.config 禁用该包，此 patch 对其无效
+#  兼容层均有 #ifndef 保护，内核原生支持时自动跳过
+#  RE-SP-01B（Linux 5.10）已在 re-sp-01b.config 禁用该包
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
@@ -84,7 +90,7 @@ shims = []
 # ── Shim 1：devm_kmemdup_array（Linux >= 6.8，6.6 需要）────────
 if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in content:
     shims.append(
-        '/* COMPAT: devm_kmemdup_array (added Linux 6.8; #ifndef auto-skip on 6.8+) */\n'
+        '/* COMPAT: devm_kmemdup_array (added Linux 6.8; auto-skip on 6.8+) */\n'
         '#ifndef devm_kmemdup_array\n'
         '#include <linux/string.h>\n'
         'static inline void *__compat_devm_kmemdup_array(\n'
@@ -103,12 +109,12 @@ if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in cont
     print('  OK: devm_kmemdup_array shim 已添加')
 
 # ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
-# 6.6 原生有（#ifndef 自动跳过），保留 shim 以防万一
+# Linux 6.6 原生有此宏，#ifndef 自动跳过；保留 shim 以防旧版本
 if ('for_each_available_child_of_node_scoped' in content and
         'compat_node_scoped' not in content):
     shims.append(
         '/* COMPAT: for_each_available_child_of_node_scoped (Linux >= 6.5)\n'
-        ' * Linux 6.6 has this natively; #ifndef auto-skips this shim */\n'
+        ' * Linux 6.6 has this natively; #ifndef auto-skips */\n'
         '#ifndef for_each_available_child_of_node_scoped\n'
         '#define for_each_available_child_of_node_scoped(parent, child) \\\n'
         '    for (struct device_node *(child) = \\\n'
