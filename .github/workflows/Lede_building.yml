@@ -1,279 +1,181 @@
-name: 🏗️ DONGZAI 固件工厂
+#!/bin/bash
 
-on:
-  workflow_dispatch:
-    inputs:
-      device:
-        description: '📦 目标设备'
-        required: true
-        default: 'wh3000pro'
-        type: choice
-        options:
-          - wh3000        # 华硅 WH3000       · MT7981 ARM · 512MB
-          - wh3000pro     # 华硅 WH3000 Pro   · MT7981 ARM · 512MB
-          - re-sp-01b     # 京东云无线宝       · MT7621 MIPS · 512MB
+echo "========================================"
+echo " DIY Part 1 - 配置软件源"
+echo "========================================"
 
-env:
-  LEDE_REPO:   https://github.com/coolsnowwolf/lede
-  LEDE_BRANCH: master
+# ── 添加自定义 Feeds ─────────────────────────
+echo "src-git lucky https://github.com/gdy666/luci-app-lucky.git" \
+    >> feeds.conf.default
+echo "src-git qmodem https://github.com/FUjr/modem_feeds.git;main" \
+    >> feeds.conf.default
+echo "src-git rtp2httpd https://github.com/stackia/rtp2httpd.git" \
+    >> feeds.conf.default
 
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+# ── 克隆 msd_lite ────────────────────────────
+git clone --depth=1 \
+    https://github.com/ximiTech/msd_lite \
+    package/msd_lite
+rm -f package/msd_lite/files/etc/init.d/msd_lite 2>/dev/null || true
 
-    steps:
+# ── 复制自定义 LuCI 插件 ─────────────────────
+cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
+    package/luci-app-iptv-manager
 
-      - name: 🎯 DONGZAI 固件工厂
-        run: |
-          cat << 'EOF'
+# ════════════════════════════════════════════════════════════════
+#  清理 backport-6.6 冲突 patches（按名称匹配）
+#
+#  之前按编号段（700-799）删 patch 不完整：
+#    702-01-*aquantia*-move*  (700段) → 创建 aquantia/ 子目录
+#    836-*aquantia*-PMD*      (800段) → 修改 aquantia/ 子目录里的文件
+#  删了 702 但留着 836，836 找不到目录就报错。
+#
+#  正确做法：按名称匹配，删除整条 aquantia / at803x 依赖链
+#  覆盖范围：700-999 全段，彻底清理
+#
+#  安全性：WH3000/WH3000 Pro 使用 MT7981 内置 PHY，
+#           不依赖 aquantia（AQtion/Marvell）和 at803x（Atheros QCA）
+#           删除这些 patch 不影响设备任何功能
+# ════════════════════════════════════════════════════════════════
+BKPORT_DIR="target/linux/generic/backport-6.6"
+if [ -d "$BKPORT_DIR" ]; then
+    echo ">>> 清理冲突的 net/phy backport patches（按名称匹配）..."
+    REMOVED=0
+    # 删除所有 aquantia 相关 patch（包括 move patch + 所有依赖它的后续 patch）
+    # 删除所有 at803x 相关 patch（整条链一起删）
+    for f in \
+        "$BKPORT_DIR"/*aquantia*.patch \
+        "$BKPORT_DIR"/*at803x*.patch \
+        "$BKPORT_DIR"/*phy-at80*.patch; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            echo "  ✅ $(basename "$f")"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
 
-            ____   ___  _   _  ____ _____    _    ___ 
-           |  _ \ / _ \| \ | |/ ___|__  /  / \  |_ _|
-           | | | | | | |  \| | |  _ / /  / _ \  | | 
-           | |_| | |_| | |\  | |_| |/ /__/ ___ \ | | 
-           |____/ \___/|_| \_|\____/____/_/   \_\___|
-                  🏗️  固件工厂  ·  OpenWrt / LEDE
+    if [ "$REMOVED" -eq 0 ]; then
+        echo "  ℹ️ 未发现相关 patch，无需清理"
+    else
+        echo "  ✅ 共清理 $REMOVED 个冲突 patch"
+    fi
+fi
 
-          EOF
+# ════════════════════════════════════════════════════════════════
+#  修复 gpio-button-hotplug 上游 API 兼容性
+#
+#  LEDE 上游更新使用了以下新内核 API：
+#    1. devm_kmemdup_array              Linux ≥ 6.8  （6.6 需要 shim）
+#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5（6.6 原生有）
+#    3. void .remove 回调               Linux ≥ 6.11 （6.6 需要修改签名）
+#
+#  兼容层均有 #ifndef 保护，内核原生支持时自动跳过
+#  RE-SP-01B（Linux 5.10）已在 re-sp-01b.config 禁用该包
+# ════════════════════════════════════════════════════════════════
+GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
-          DEVICE="${{ github.event.inputs.device }}"
-          case "$DEVICE" in
-            wh3000)
-              DNAME="华硅 WH3000"
-              DSPEC="MT7981 ARM · 512MB RAM · eMMC"
-              ;;
-            wh3000pro)
-              DNAME="华硅 WH3000 Pro"
-              DSPEC="MT7981 ARM · 512MB RAM · eMMC"
-              ;;
-            re-sp-01b)
-              DNAME="京东云无线宝 RE-SP-01B"
-              DSPEC="MT7621 MIPS · 512MB RAM · 128GB eMMC"
-              ;;
-          esac
+if [ -f "$GHBH_C" ]; then
+    echo ">>> 修复 gpio-button-hotplug 内核兼容性..."
 
-          echo "  ┌─────────────────────────────────────────┐"
-          echo "  │  📦 设备：$DNAME"
-          echo "  │  🔧 规格：$DSPEC"
-          echo "  │  🕐 时间：$(date '+%Y-%m-%d %H:%M:%S UTC')"
-          echo "  │  🔖 标识：DONGZAI"
-          echo "  └─────────────────────────────────────────┘"
+    python3 << 'PYEOF'
+import re
 
-      - name: 📥 检出仓库
-        uses: actions/checkout@v4
+filepath = 'package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c'
+with open(filepath, 'r') as f:
+    content = f.read()
 
-      - name: 🧹 释放磁盘空间
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc \
-                      /usr/local/lib/android \
-                      /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -a -f
-          sudo apt-get clean
-          sudo swapoff -a || true
-          sudo rm -f /swapfile
-          echo "── 当前磁盘空间 ──"
-          df -h
+changed = False
+shims = []
 
-      - name: ⚙️ 初始化编译环境
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y \
-            build-essential clang flex bison \
-            g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses5-dev libssl-dev \
-            python3 python3-pyelftools rsync unzip \
-            zlib1g-dev file wget curl ccache cmake \
-            ninja-build jq rename libelf-dev \
-            device-tree-compiler
+# ── Shim 1：devm_kmemdup_array（Linux >= 6.8，6.6 需要）────────
+if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in content:
+    shims.append(
+        '/* COMPAT: devm_kmemdup_array (added Linux 6.8; auto-skip on 6.8+) */\n'
+        '#ifndef devm_kmemdup_array\n'
+        '#include <linux/string.h>\n'
+        'static inline void *__compat_devm_kmemdup_array(\n'
+        '    struct device *dev, const void *src,\n'
+        '    size_t n, size_t size, gfp_t gfp)\n'
+        '{\n'
+        '    void *p = devm_kmalloc_array(dev, n, size, gfp);\n'
+        '    if (p) memcpy(p, src, n * size);\n'
+        '    return p;\n'
+        '}\n'
+        '#define devm_kmemdup_array(dev, src, n, size, gfp) \\\n'
+        '    __compat_devm_kmemdup_array(dev, src, n, size, gfp)\n'
+        '#endif'
+    )
+    changed = True
+    print('  OK: devm_kmemdup_array shim 已添加')
 
-      - name: 📦 克隆 LEDE 源码
-        run: |
-          git clone --depth=1 -b $LEDE_BRANCH $LEDE_REPO openwrt
-          echo "── LEDE 最新提交 ──"
-          git -C openwrt log --oneline -3
+# ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
+# Linux 6.6 原生有此宏，#ifndef 自动跳过；保留 shim 以防旧版本
+if ('for_each_available_child_of_node_scoped' in content and
+        'compat_node_scoped' not in content):
+    shims.append(
+        '/* COMPAT: for_each_available_child_of_node_scoped (Linux >= 6.5)\n'
+        ' * Linux 6.6 has this natively; #ifndef auto-skips */\n'
+        '#ifndef for_each_available_child_of_node_scoped\n'
+        '#define for_each_available_child_of_node_scoped(parent, child) \\\n'
+        '    for (struct device_node *(child) = \\\n'
+        '             of_get_next_available_child((parent), NULL); \\\n'
+        '         (child) != NULL; \\\n'
+        '         (child) = of_get_next_available_child((parent), (child)))\n'
+        '#endif'
+    )
+    changed = True
+    print('  OK: for_each_available_child_of_node_scoped shim 已添加（6.6 自动跳过）')
 
-      - name: 🔧 DIY Part 1 - 配置 Feeds
-        run: |
-          chmod +x diy-part1.sh
-          cd openwrt
-          ../diy-part1.sh
+# ── 插入 shims 到最后一个 #include 之后 ────────────────────────
+if shims:
+    combined = '\n\n' + '\n\n'.join(shims) + '\n\n'
+    includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
+    if includes:
+        pos = includes[-1].end()
+        content = content[:pos] + combined + content[pos:]
+    else:
+        content = combined + content
 
-      - name: 🔄 更新 & 安装 Feeds
-        run: |
-          cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+# ── Fix 3：void .remove → int .remove（Linux 6.11 才改为 void）──
+lines = content.split('\n')
+result = []
+in_remove = False
+depth = 0
 
-      - name: 🎛️ 加载设备配置
-        run: |
-          DEVICE="${{ github.event.inputs.device }}"
-          echo "── 加载配置：${DEVICE}.config ──"
+for line in lines:
+    if (not in_remove
+            and 'static void ' in line
+            and '_remove(' in line
+            and 'platform_device' in line):
+        line = line.replace('static void ', 'static int ', 1)
+        in_remove = True
+        depth = 0
+        changed = True
 
-          case "$DEVICE" in
-            wh3000)    cp wh3000.config    openwrt/.config ;;
-            wh3000pro) cp wh3000pro.config openwrt/.config ;;
-            re-sp-01b) cp re-sp-01b.config openwrt/.config ;;
-          esac
+    if in_remove:
+        prev = depth
+        depth += line.count('{') - line.count('}')
+        if prev > 0 and depth == 0 and '}' in line:
+            result.append('\treturn 0;')
+            in_remove = False
 
-          # ── 设备 TARGET 修正 ─────────────────────────────────
-          # WH3000 / WH3000 Pro：config 文件已有正确设备行，直接使用
-          #   之前编译正常，TARGET 修正反而会引入错误，故跳过
-          # RE-SP-01B：config 由其他设备 config 修改而来，需强制修正
-          #   否则 make defconfig 会默认选中 abt_asr3000
-          if [ "$DEVICE" = "re-sp-01b" ]; then
-            grep -v "CONFIG_TARGET_.*_DEVICE_" openwrt/.config \
-              > /tmp/.config_patched
-            echo "CONFIG_TARGET_ramips_mt7621_DEVICE_jdcloud_re-sp-01b=y" \
-              >> /tmp/.config_patched
-            cp /tmp/.config_patched openwrt/.config
-            echo "✅ RE-SP-01B 设备目标已修正"
-          else
-            echo "✅ ${DEVICE}：直接使用 config 文件中的设备配置"
-          fi
+    result.append(line)
 
-          echo "── 当前设备目标 ──"
-          grep "DEVICE_" openwrt/.config | grep -v "^#" || true
+content = '\n'.join(result)
 
-      - name: 🐧 配置内核版本
-        run: |
-          DEVICE="${{ github.event.inputs.device }}"
+if changed:
+    with open(filepath, 'w') as f:
+        f.write(content)
+    print('  OK: gpio-button-hotplug 全部 patch 完成')
+else:
+    print('  INFO: 文件无需修复')
+PYEOF
 
-          case "$DEVICE" in
-            wh3000|wh3000pro)
-              # ARM Filogic（MT7981）：启用测试内核
-              # 不锁定具体版本号，让 LEDE 自动选择当前最新测试内核
-              printf 'CONFIG_TESTING_KERNEL=y\n' >> openwrt/.config
-              echo "✅ Filogic ARM：已启用最新测试内核（LEDE 自动选择）"
-              ;;
-            re-sp-01b)
-              # MT7621 MIPS：仅支持 5.x 稳定内核
-              # 测试内核存在 crypto 模块缺失问题，必须使用稳定版
-              sed -i '/CONFIG_TESTING_KERNEL/d' openwrt/.config
-              sed -i '/CONFIG_LINUX_6_6/d'      openwrt/.config
-              printf '# CONFIG_TESTING_KERNEL is not set\n' >> openwrt/.config
-              echo "⏭️ MT7621 MIPS：使用稳定内核（5.x）"
-              ;;
-          esac
+else
+    echo ">>> gpio-button-hotplug 源文件不存在，跳过"
+fi
 
-      - name: 🔧 DIY Part 2 - 文件定制
-        run: |
-          chmod +x diy-part2.sh
-          cd openwrt
-          # 把设备名通过环境变量注入脚本，按设备分支执行定制
-          export DEVICE="${{ github.event.inputs.device }}"
-          ../diy-part2.sh
-
-      - name: 📋 生成最终配置
-        run: |
-          cd openwrt
-          make defconfig
-          echo "── TARGET 配置 ──"
-          grep "CONFIG_TARGET_" .config | head -10
-          echo "── 内核版本 ──"
-          grep -E "LINUX_6|LINUX_5|TESTING_KERNEL" .config | head -5 || true
-
-      - name: ⬇️ 下载编译依赖
-        run: |
-          cd openwrt
-          make download -j8
-          find dl -size -1024c -exec ls -l {} \; 2>/dev/null || true
-
-      - name: 🔨 编译固件
-        run: |
-          cd openwrt
-          echo "── 开始编译，CPU 核心：$(nproc) ──"
-
-          make -j$(nproc) V=s 2>&1 | tee /tmp/build.log | \
-            grep -E "^make\[|ERROR:|error:" || true
-
-          # 检查编译结果
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "⚠️ 并行编译失败，单线程重试以获取完整错误信息..."
-            make -j1 V=s 2>&1 | tail -150
-            exit 1
-          fi
-
-          echo "✅ 编译完成"
-
-      - name: 📁 整理固件
-        id: organize
-        run: |
-          mkdir -p upload
-
-          find openwrt/bin/targets/ -type f \
-            \( -name "*.bin" -o -name "*.img.gz" \
-               -o -name "*.itb"  -o -name "*.tar" \) \
-            -exec cp {} upload/ \;
-
-          cd upload
-
-          # 统一重命名：openwrt/lede → DONGZAI
-          for f in *; do
-            newname=$(echo "$f" | \
-              sed 's/openwrt/DONGZAI/g; s/lede/DONGZAI/g')
-            [ "$f" != "$newname" ] && mv "$f" "$newname"
-          done
-
-          echo "── 固件列表 ──"
-          ls -lh
-
-          # 用 if 语句判断，避免 bash -e 模式下空目录误退出
-          if [ -z "$(ls -A .)" ]; then
-            echo "⚠️ 警告：未找到固件文件，编译可能存在问题"
-            exit 1
-          fi
-
-          echo "✅ 固件整理完成，共 $(ls | wc -l) 个文件"
-
-      - name: 📤 上传 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: DONGZAI_${{ github.event.inputs.device }}_${{ github.run_number }}
-          path: upload/
-          retention-days: 7
-
-      - name: 🏷️ 生成 Release 标签
-        id: tag
-        run: |
-          DEVICE="${{ github.event.inputs.device }}"
-          DATE=$(date +'%Y-%m-%d')
-          TIME=$(date +'%H%M')
-          TAG="DONGZAI-${DEVICE^^}-$(date +'%Y.%m.%d')-${TIME}"
-
-          echo "release_tag=$TAG"   >> "$GITHUB_OUTPUT"
-          echo "release_date=$DATE" >> "$GITHUB_OUTPUT"
-          echo "生成 Tag：$TAG"
-
-      - name: 🚀 发布到 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: "🏗️ DONGZAI · ${{ github.event.inputs.device }} · ${{ steps.tag.outputs.release_date }}"
-          files: upload/*
-          body: |
-            ## 🏗️ DONGZAI 固件工厂
-
-            | 项目 | 内容 |
-            |---|---|
-            | 📦 设备 | `${{ github.event.inputs.device }}` |
-            | 🐧 内核 | 最新测试内核（Filogic ARM）/ 稳定 5.x（MT7621 MIPS） |
-            | 📅 编译日期 | ${{ steps.tag.outputs.release_date }} |
-            | 🔖 标识 | DONGZAI |
-
-            ### 固件文件说明
-            | 文件 | 用途 |
-            |---|---|
-            | `*-initramfs-kernel.bin` | 首次刷机 / TFTP 恢复 |
-            | `*-squashfs-sysupgrade.bin` | ✅ 日常升级固件（推荐） |
-
-            ### 刷机注意
-            - 首次刷入请先备份原厂固件
-            - 建议使用 `sysupgrade` 命令升级，勿勾选保留配置
-
-            ---
-            🤖 由 GitHub Actions 自动编译 · DONGZAI 固件工厂
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+echo "========================================"
+echo " DIY Part 1 完成"
+echo "========================================"
+cat feeds.conf.default
