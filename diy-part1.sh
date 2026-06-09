@@ -23,37 +23,37 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
     package/luci-app-iptv-manager
 
 # ════════════════════════════════════════════════════════════════
-#  清理 backport-6.6 冲突 patches（综合内容扫描）
+#  清理 backport-6.6 冲突 patches（综合内容扫描，全层级覆盖）
 #
-#  历史故障模式：
-#    702-*aquantia-move*   → 创建 aquantia/ 目录（6.6.142 已原生包含）
-#    707-*at803x*          → 修改 at803x 文件
-#    713-*qcom*            → 修改 qcom/ 目录（702 被删后目录不存在）
-#    836-*aquantia-PMD*    → 修改 aquantia_main.c（同上）
-#    782-05-*Aeonsemi*     → 修改 Kconfig/Makefile（行号偏移导致 hunk 失败）
+#  问题根源：LEDE 将 net/phy 驱动系统性迁移到子目录（6.7~6.16 的变更）：
+#    aquantia → drivers/net/phy/aquantia/  (Linux 6.7)
+#    at803x   → drivers/net/phy/qcom/     (Linux 6.9)
+#    realtek  → drivers/net/phy/realtek/  (Linux 6.14)
+#    Aeonsemi/其他新 PHY 芯片...           (陆续增加)
 #
-#  共同特征：所有"新增 PHY 芯片支持"的 patch，
-#            都必然修改 drivers/net/phy/Kconfig 和 Makefile。
-#  扫描策略（三重过滤，任意一条命中即删除）：
-#    1. patch 内容引用 aquantia/ qcom/ 子目录路径
-#    2. patch 内容引用 at803x 路径
-#    3. patch 修改了 drivers/net/phy/Kconfig 或 Makefile
-#       （所有新增 PHY 驱动都会改这两个文件，且最易因行号偏移失败）
+#  每次迁移形成 patch 依赖链：
+#    "移目录" patch → 修改顶层 Kconfig/Makefile（已被扫描删除）
+#    后续 patch     → 修改子目录内的文件（因目录不存在而报错）
 #
-#  安全性：WH3000/WH3000 Pro 使用 MT7981 MediaTek 内置 PHY，
-#           不依赖任何第三方 PHY 驱动（aquantia / qcom / at803x /
-#           aeonsemi / realtek-extra 等），删除全部无影响。
-#           未来 LEDE 新增同类 patch，条件 3 自动覆盖，无需再改脚本。
+#  扫描策略（三重条件，任意命中即删除）：
+#    1. 引用已知 PHY 子目录路径（aquantia/ qcom/ realtek/）
+#    2. 引用 at803x 路径
+#    3. 修改了 drivers/net/phy/ 下任意层级的 Kconfig 或 Makefile
+#       ★ 改进：.* 匹配任意子目录，覆盖 realtek/Kconfig 等子目录文件
+#
+#  安全性：WH3000/WH3000 Pro 使用 MT7981 + MT7531（均为 MediaTek），
+#           不依赖 Realtek RTL8xxx / Aquantia / QCOM / at803x / Aeonsemi
+#           等第三方 PHY 芯片，删除全部无影响。
 # ════════════════════════════════════════════════════════════════
 BKPORT_DIR="target/linux/generic/backport-6.6"
 if [ -d "$BKPORT_DIR" ]; then
-    echo ">>> 扫描 backport-6.6 冲突 patches（综合内容扫描）..."
+    echo ">>> 扫描 backport-6.6 冲突 patches（全层级内容扫描）..."
     REMOVED=0
     for f in "$BKPORT_DIR"/*.patch; do
         [ -f "$f" ] || continue
         # 三重扫描条件（任意一条命中 → 删除）
         if grep -qE \
-            'drivers/net/phy/(aquantia|qcom)/|net/phy/at803x|\+\+\+ b/drivers/net/phy/(Kconfig|Makefile)' \
+            'drivers/net/phy/(aquantia|qcom|realtek)/|net/phy/at803x|\+\+\+ b/drivers/net/phy/.*(Kconfig|Makefile)' \
             "$f" 2>/dev/null; then
             rm -f "$f"
             echo "  🗑️  $(basename "$f")"
@@ -69,7 +69,7 @@ fi
 
 # ════════════════════════════════════════════════════════════════
 #  修复 gpio-button-hotplug 上游 API 兼容性
-#  （均有 #ifndef 保护，内核原生支持时自动跳过）
+#  （#ifndef 保护，内核原生支持时自动跳过）
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
