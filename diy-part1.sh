@@ -23,62 +23,53 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
     package/luci-app-iptv-manager
 
 # ════════════════════════════════════════════════════════════════
-#  清理 backport-6.6 冲突 patches（内容扫描，一次性彻底清理）
+#  清理 backport-6.6 冲突 patches（综合内容扫描）
 #
-#  问题根因：LEDE 的 backport-6.6 目录里有一批 net/phy 驱动重组 patch，
-#  将 at803x → qcom 子目录、aquantia → aquantia 子目录等。
-#  这些 patch 之间存在依赖链：
-#    702  → 创建 aquantia/ 目录
-#    836  → 修改 aquantia/aquantia_main.c（依赖 702）
-#    707  → 修改 at803x
-#    713-01 → 创建 qcom/ 目录（at803x → qcom 重命名）
-#    713-02 → 修改 qcom/ 内文件（依赖 713-01）
-#    ...（未来可能还有更多）
+#  历史故障模式：
+#    702-*aquantia-move*   → 创建 aquantia/ 目录（6.6.142 已原生包含）
+#    707-*at803x*          → 修改 at803x 文件
+#    713-*qcom*            → 修改 qcom/ 目录（702 被删后目录不存在）
+#    836-*aquantia-PMD*    → 修改 aquantia_main.c（同上）
+#    782-05-*Aeonsemi*     → 修改 Kconfig/Makefile（行号偏移导致 hunk 失败）
 #
-#  之前按名称/编号删，每次只删一个，下一个 patch 又报错（打地鼠）。
-#
-#  正确做法：扫描 patch 文件内容，凡是涉及以下路径的一律删除：
-#    drivers/net/phy/aquantia/   - Aquantia 驱动子目录
-#    drivers/net/phy/qcom/       - Qualcomm QCOM 驱动子目录
-#    net/phy/at803x              - Atheros at803x 驱动
+#  共同特征：所有"新增 PHY 芯片支持"的 patch，
+#            都必然修改 drivers/net/phy/Kconfig 和 Makefile。
+#  扫描策略（三重过滤，任意一条命中即删除）：
+#    1. patch 内容引用 aquantia/ qcom/ 子目录路径
+#    2. patch 内容引用 at803x 路径
+#    3. patch 修改了 drivers/net/phy/Kconfig 或 Makefile
+#       （所有新增 PHY 驱动都会改这两个文件，且最易因行号偏移失败）
 #
 #  安全性：WH3000/WH3000 Pro 使用 MT7981 MediaTek 内置 PHY，
-#           完全不依赖 Aquantia / Qualcomm QCOM / Atheros at803x，
-#           删除这些 patch 对设备功能无任何影响。
-#           以后 LEDE 再新增相关 patch，也会被自动扫描并清理。
+#           不依赖任何第三方 PHY 驱动（aquantia / qcom / at803x /
+#           aeonsemi / realtek-extra 等），删除全部无影响。
+#           未来 LEDE 新增同类 patch，条件 3 自动覆盖，无需再改脚本。
 # ════════════════════════════════════════════════════════════════
 BKPORT_DIR="target/linux/generic/backport-6.6"
 if [ -d "$BKPORT_DIR" ]; then
-    echo ">>> 扫描并清理 net/phy 冲突 patches..."
+    echo ">>> 扫描 backport-6.6 冲突 patches（综合内容扫描）..."
     REMOVED=0
     for f in "$BKPORT_DIR"/*.patch; do
         [ -f "$f" ] || continue
-        # 检查 patch 内容是否涉及以下冲突 PHY 驱动路径
+        # 三重扫描条件（任意一条命中 → 删除）
         if grep -qE \
-            'drivers/net/phy/(aquantia|qcom)/|net/phy/at803x' \
+            'drivers/net/phy/(aquantia|qcom)/|net/phy/at803x|\+\+\+ b/drivers/net/phy/(Kconfig|Makefile)' \
             "$f" 2>/dev/null; then
             rm -f "$f"
-            echo "  ✅ $(basename "$f")"
+            echo "  🗑️  $(basename "$f")"
             REMOVED=$((REMOVED + 1))
         fi
     done
     if [ "$REMOVED" -eq 0 ]; then
-        echo "  ℹ️ 未发现冲突 patch，无需清理"
+        echo "  ℹ️  无冲突 patch，跳过"
     else
-        echo "  ✅ 共清理 $REMOVED 个冲突 patch（内容扫描）"
+        echo "  ✅ 共清理 $REMOVED 个冲突 patch"
     fi
 fi
 
 # ════════════════════════════════════════════════════════════════
 #  修复 gpio-button-hotplug 上游 API 兼容性
-#
-#  LEDE 上游更新使用了以下新内核 API：
-#    1. devm_kmemdup_array              Linux ≥ 6.8  （6.6 需要 shim）
-#    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5（6.6 原生有）
-#    3. void .remove 回调               Linux ≥ 6.11 （6.6 需要修改签名）
-#
-#  均有 #ifndef 保护，内核原生支持时自动跳过
-#  RE-SP-01B（Linux 5.10）已在 re-sp-01b.config 禁用该包
+#  （均有 #ifndef 保护，内核原生支持时自动跳过）
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
 
@@ -95,10 +86,10 @@ with open(filepath, 'r') as f:
 changed = False
 shims = []
 
-# ── Shim 1：devm_kmemdup_array（Linux >= 6.8，6.6 需要）────────
+# Shim 1: devm_kmemdup_array (Linux >= 6.8)
 if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in content:
     shims.append(
-        '/* COMPAT: devm_kmemdup_array (added Linux 6.8; auto-skip on 6.8+) */\n'
+        '/* COMPAT: devm_kmemdup_array (Linux >= 6.8; #ifndef auto-skip on 6.8+) */\n'
         '#ifndef devm_kmemdup_array\n'
         '#include <linux/string.h>\n'
         'static inline void *__compat_devm_kmemdup_array(\n'
@@ -116,7 +107,7 @@ if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in cont
     changed = True
     print('  OK: devm_kmemdup_array shim 已添加')
 
-# ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
+# Shim 2: for_each_available_child_of_node_scoped (Linux >= 6.5)
 if ('for_each_available_child_of_node_scoped' in content and
         'compat_node_scoped' not in content):
     shims.append(
@@ -133,7 +124,6 @@ if ('for_each_available_child_of_node_scoped' in content and
     changed = True
     print('  OK: for_each_available_child_of_node_scoped shim 已添加')
 
-# ── 插入 shims ──────────────────────────────────────────────────
 if shims:
     combined = '\n\n' + '\n\n'.join(shims) + '\n\n'
     includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
@@ -143,7 +133,7 @@ if shims:
     else:
         content = combined + content
 
-# ── Fix 3：void .remove → int .remove ──────────────────────────
+# Fix 3: void .remove → int .remove (Linux >= 6.11 changed to void)
 lines = content.split('\n')
 result = []
 in_remove = False
@@ -179,7 +169,7 @@ else:
 PYEOF
 
 else
-    echo ">>> gpio-button-hotplug 源文件不存在，跳过"
+    echo ">>> gpio-button-hotplug 不存在，跳过"
 fi
 
 echo "========================================"
