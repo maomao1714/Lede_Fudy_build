@@ -23,41 +23,49 @@ cp -r "${GITHUB_WORKSPACE}/custom-packages/luci-app-iptv-manager" \
     package/luci-app-iptv-manager
 
 # ════════════════════════════════════════════════════════════════
-#  清理 backport-6.6 冲突 patches（按名称匹配）
+#  清理 backport-6.6 冲突 patches（内容扫描，一次性彻底清理）
 #
-#  之前按编号段（700-799）删 patch 不完整：
-#    702-01-*aquantia*-move*  (700段) → 创建 aquantia/ 子目录
-#    836-*aquantia*-PMD*      (800段) → 修改 aquantia/ 子目录里的文件
-#  删了 702 但留着 836，836 找不到目录就报错。
+#  问题根因：LEDE 的 backport-6.6 目录里有一批 net/phy 驱动重组 patch，
+#  将 at803x → qcom 子目录、aquantia → aquantia 子目录等。
+#  这些 patch 之间存在依赖链：
+#    702  → 创建 aquantia/ 目录
+#    836  → 修改 aquantia/aquantia_main.c（依赖 702）
+#    707  → 修改 at803x
+#    713-01 → 创建 qcom/ 目录（at803x → qcom 重命名）
+#    713-02 → 修改 qcom/ 内文件（依赖 713-01）
+#    ...（未来可能还有更多）
 #
-#  正确做法：按名称匹配，删除整条 aquantia / at803x 依赖链
-#  覆盖范围：700-999 全段，彻底清理
+#  之前按名称/编号删，每次只删一个，下一个 patch 又报错（打地鼠）。
 #
-#  安全性：WH3000/WH3000 Pro 使用 MT7981 内置 PHY，
-#           不依赖 aquantia（AQtion/Marvell）和 at803x（Atheros QCA）
-#           删除这些 patch 不影响设备任何功能
+#  正确做法：扫描 patch 文件内容，凡是涉及以下路径的一律删除：
+#    drivers/net/phy/aquantia/   - Aquantia 驱动子目录
+#    drivers/net/phy/qcom/       - Qualcomm QCOM 驱动子目录
+#    net/phy/at803x              - Atheros at803x 驱动
+#
+#  安全性：WH3000/WH3000 Pro 使用 MT7981 MediaTek 内置 PHY，
+#           完全不依赖 Aquantia / Qualcomm QCOM / Atheros at803x，
+#           删除这些 patch 对设备功能无任何影响。
+#           以后 LEDE 再新增相关 patch，也会被自动扫描并清理。
 # ════════════════════════════════════════════════════════════════
 BKPORT_DIR="target/linux/generic/backport-6.6"
 if [ -d "$BKPORT_DIR" ]; then
-    echo ">>> 清理冲突的 net/phy backport patches（按名称匹配）..."
+    echo ">>> 扫描并清理 net/phy 冲突 patches..."
     REMOVED=0
-    # 删除所有 aquantia 相关 patch（包括 move patch + 所有依赖它的后续 patch）
-    # 删除所有 at803x 相关 patch（整条链一起删）
-    for f in \
-        "$BKPORT_DIR"/*aquantia*.patch \
-        "$BKPORT_DIR"/*at803x*.patch \
-        "$BKPORT_DIR"/*phy-at80*.patch; do
-        if [ -f "$f" ]; then
+    for f in "$BKPORT_DIR"/*.patch; do
+        [ -f "$f" ] || continue
+        # 检查 patch 内容是否涉及以下冲突 PHY 驱动路径
+        if grep -qE \
+            'drivers/net/phy/(aquantia|qcom)/|net/phy/at803x' \
+            "$f" 2>/dev/null; then
             rm -f "$f"
             echo "  ✅ $(basename "$f")"
             REMOVED=$((REMOVED + 1))
         fi
     done
-
     if [ "$REMOVED" -eq 0 ]; then
-        echo "  ℹ️ 未发现相关 patch，无需清理"
+        echo "  ℹ️ 未发现冲突 patch，无需清理"
     else
-        echo "  ✅ 共清理 $REMOVED 个冲突 patch"
+        echo "  ✅ 共清理 $REMOVED 个冲突 patch（内容扫描）"
     fi
 fi
 
@@ -69,7 +77,7 @@ fi
 #    2. for_each_available_child_of_node_scoped  Linux ≥ 6.5（6.6 原生有）
 #    3. void .remove 回调               Linux ≥ 6.11 （6.6 需要修改签名）
 #
-#  兼容层均有 #ifndef 保护，内核原生支持时自动跳过
+#  均有 #ifndef 保护，内核原生支持时自动跳过
 #  RE-SP-01B（Linux 5.10）已在 re-sp-01b.config 禁用该包
 # ════════════════════════════════════════════════════════════════
 GHBH_C="package/kernel/gpio-button-hotplug/src/gpio-button-hotplug.c"
@@ -109,12 +117,11 @@ if 'devm_kmemdup_array' in content and '__compat_devm_kmemdup_array' not in cont
     print('  OK: devm_kmemdup_array shim 已添加')
 
 # ── Shim 2：for_each_available_child_of_node_scoped（Linux >= 6.5）──
-# Linux 6.6 原生有此宏，#ifndef 自动跳过；保留 shim 以防旧版本
 if ('for_each_available_child_of_node_scoped' in content and
         'compat_node_scoped' not in content):
     shims.append(
         '/* COMPAT: for_each_available_child_of_node_scoped (Linux >= 6.5)\n'
-        ' * Linux 6.6 has this natively; #ifndef auto-skips */\n'
+        ' * Linux 6.6 has natively; #ifndef auto-skips */\n'
         '#ifndef for_each_available_child_of_node_scoped\n'
         '#define for_each_available_child_of_node_scoped(parent, child) \\\n'
         '    for (struct device_node *(child) = \\\n'
@@ -124,9 +131,9 @@ if ('for_each_available_child_of_node_scoped' in content and
         '#endif'
     )
     changed = True
-    print('  OK: for_each_available_child_of_node_scoped shim 已添加（6.6 自动跳过）')
+    print('  OK: for_each_available_child_of_node_scoped shim 已添加')
 
-# ── 插入 shims 到最后一个 #include 之后 ────────────────────────
+# ── 插入 shims ──────────────────────────────────────────────────
 if shims:
     combined = '\n\n' + '\n\n'.join(shims) + '\n\n'
     includes = list(re.finditer(r'^#include\s+.*$', content, re.MULTILINE))
@@ -136,7 +143,7 @@ if shims:
     else:
         content = combined + content
 
-# ── Fix 3：void .remove → int .remove（Linux 6.11 才改为 void）──
+# ── Fix 3：void .remove → int .remove ──────────────────────────
 lines = content.split('\n')
 result = []
 in_remove = False
